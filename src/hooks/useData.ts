@@ -24,7 +24,6 @@ export function getWords(userId: string): WordEntry[] {
   const data = localStorage.getItem(storageKey("words", userId));
   if (!data) return [];
   const parsed = JSON.parse(data);
-  // Migrate old format (string[]) to new format (WordEntry[])
   if (parsed.length > 0 && typeof parsed[0] === "string") {
     const migrated: WordEntry[] = parsed.map((w: string) => ({
       word: w,
@@ -81,7 +80,7 @@ export function isWordAdded(userId: string, word: string): boolean {
   return getWords(userId).some((w) => w.word === word);
 }
 
-// Learning status (stores just word strings, no group needed)
+// Learning status
 export function getLearningWords(userId: string): string[] {
   const data = localStorage.getItem(storageKey("learning", userId));
   return data ? JSON.parse(data) : [];

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
 export default function Register() {
@@ -62,9 +62,9 @@ export default function Register() {
         </form>
         <p className="text-sm text-gray-500 text-center mt-4">
           已有账号？{" "}
-          <a href="/login" className="text-purple-600 hover:underline">
+          <Link to="/login" className="text-purple-600 hover:underline">
             登录
-          </a>
+          </Link>
         </p>
       </div>
     </div>
