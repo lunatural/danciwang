@@ -38,16 +38,22 @@ export function getWords(userId: string): WordEntry[] {
 
 export function addWord(userId: string, word: string, group = "手动添加") {
   const words = getWords(userId);
-  if (!words.find((w) => w.word === word)) {
+  if (!words.find((w) => w.word === word && w.group === group)) {
     words.push({ word, group, addedAt: new Date().toISOString() });
     localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
   }
 }
 
-export function removeWord(userId: string, word: string) {
-  const words = getWords(userId).filter((w) => w.word !== word);
+export function removeWord(userId: string, word: string, group?: string) {
+  const words = getWords(userId).filter((w) => {
+    if (group) return !(w.word === word && w.group === group);
+    return w.word !== word;
+  });
   localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
-  removeFromLearning(userId, word);
+  // Only remove from learning if the word is no longer in any group
+  if (group === undefined || !words.some((w) => w.word === word)) {
+    removeFromLearning(userId, word);
+  }
 }
 
 export function removeGroup(userId: string, group: string) {
@@ -94,6 +100,33 @@ export function addToLearning(userId: string, word: string) {
   }
 }
 
+export function batchImportWords(
+  userId: string,
+  wordList: string[],
+  group: string
+): number {
+  const words = getWords(userId);
+  const learning = getLearningWords(userId);
+  const existingPairs = new Set(words.map((w) => `${w.word}|${w.group}`));
+  const now = new Date().toISOString();
+  let added = 0;
+
+  for (const word of wordList) {
+    if (!existingPairs.has(`${word}|${group}`)) {
+      words.push({ word, group, addedAt: now });
+      existingPairs.add(`${word}|${group}`);
+      added++;
+    }
+    if (!learning.includes(word)) {
+      learning.push(word);
+    }
+  }
+
+  localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
+  localStorage.setItem(storageKey("learning", userId), JSON.stringify(learning));
+  return added;
+}
+
 export function removeFromLearning(userId: string, word: string) {
   const learning = getLearningWords(userId).filter((w) => w !== word);
   localStorage.setItem(storageKey("learning", userId), JSON.stringify(learning));
@@ -102,7 +135,14 @@ export function removeFromLearning(userId: string, word: string) {
 export function moveToReview(userId: string, word: string) {
   removeFromLearning(userId, word);
   const schedule = getReviewSchedule(userId);
-  if (!schedule.find((s) => s.word === word)) {
+  const existing = schedule.find((s) => s.word === word);
+  if (existing) {
+    existing.easeFactor = 2.5;
+    existing.intervalDays = 0;
+    existing.repetitions = 0;
+    existing.nextReviewAt = new Date().toISOString();
+    existing.lastReviewAt = new Date().toISOString();
+  } else {
     schedule.push({
       id: crypto.randomUUID(),
       userId,
@@ -113,8 +153,8 @@ export function moveToReview(userId: string, word: string) {
       nextReviewAt: new Date().toISOString(),
       lastReviewAt: new Date().toISOString(),
     });
-    localStorage.setItem(storageKey("schedule", userId), JSON.stringify(schedule));
   }
+  localStorage.setItem(storageKey("schedule", userId), JSON.stringify(schedule));
 }
 
 // Review schedule

@@ -11,6 +11,8 @@ export interface WordData {
   sourceUrls: string[];
 }
 
+import { translateWithFallback } from "./translationProviders";
+
 const BASE = "https://api.dictionaryapi.dev/api/v2/entries/en";
 
 export async function fetchWord(word: string): Promise<WordData | null> {
@@ -84,27 +86,106 @@ export async function translateToChinese(text: string): Promise<string> {
   if (!text) return "";
   if (translationCache[text]) return translationCache[text];
 
-  // Check localStorage cache
-  const cacheKey = `tr_${text}`;
+  const cacheKey = `tr_zh_${text}`;
   const cached = localStorage.getItem(cacheKey);
   if (cached) {
     translationCache[text] = cached;
     return cached;
   }
 
-  try {
-    const res = await fetch(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|zh`
-    );
-    const data = await res.json();
-    const translated = data?.responseData?.translatedText || "";
-    if (translated && translated !== text) {
-      translationCache[text] = translated;
-      try { localStorage.setItem(cacheKey, translated); } catch { /* storage full */ }
-      return translated;
+  // Long text: chunk for better translation success
+  if (text.length > 150) {
+    const chunks = splitIntoChunks(text, 150);
+    const results: string[] = [];
+    for (const chunk of chunks) {
+      const translated = await translateWithFallback(chunk, "en", "zh");
+      results.push(translated || chunk);
     }
-  } catch { /* translation unavailable */ }
+    const joined = results.join("");
+    if (joined) {
+      translationCache[text] = joined;
+      try { localStorage.setItem(cacheKey, joined); } catch { /* storage full */ }
+      return joined;
+    }
+    return "";
+  }
+
+  const result = await translateWithFallback(text, "en", "zh");
+  if (result) {
+    translationCache[text] = result;
+    try { localStorage.setItem(cacheKey, result); } catch { /* storage full */ }
+    return result;
+  }
   return "";
+}
+
+export async function translateToEnglish(text: string): Promise<string> {
+  if (!text) return "";
+  const cacheKey = `tr_en_${text}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) {
+    // Always clean cached value — it may have been stored before cleaning was added
+    const cleaned = cached.trim().replace(/[^a-zA-Z\s-]/g, "").trim().toLowerCase();
+    if (cleaned && /[a-z]/.test(cleaned)) return cleaned;
+    localStorage.removeItem(cacheKey);
+  }
+
+  const result = await translateWithFallback(text, "zh", "en");
+  if (result) {
+    const cleaned = result.trim().replace(/[^a-zA-Z\s-]/g, "").trim().toLowerCase();
+    if (cleaned) {
+      try { localStorage.setItem(cacheKey, cleaned); } catch { /* storage full */ }
+      return cleaned;
+    }
+  }
+  return "";
+}
+
+// Split text at sentence boundaries for chunked translation
+function splitIntoChunks(text: string, maxLen: number): string[] {
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+    // Try to find a sentence boundary within maxLen
+    let splitAt = remaining.lastIndexOf(". ", maxLen);
+    if (splitAt === -1) splitAt = remaining.lastIndexOf("。", maxLen);
+    if (splitAt === -1) splitAt = remaining.lastIndexOf("！", maxLen);
+    if (splitAt === -1) splitAt = remaining.lastIndexOf("？", maxLen);
+    if (splitAt === -1) splitAt = remaining.lastIndexOf("\n", maxLen);
+    if (splitAt === -1) splitAt = remaining.lastIndexOf(" ", maxLen);
+    if (splitAt === -1 || splitAt < maxLen / 2) splitAt = maxLen;
+    chunks.push(remaining.slice(0, splitAt + 1).trim());
+    remaining = remaining.slice(splitAt + 1).trim();
+  }
+  return chunks;
+}
+
+export async function translateLongText(
+  text: string,
+  direction: "zh2en" | "en2zh"
+): Promise<string> {
+  if (!text) return "";
+
+  const cacheKey = `tr_long_${direction}_${text}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) return cached;
+
+  const chunks = splitIntoChunks(text, 400);
+  const translateFn = direction === "en2zh" ? translateToChinese : translateToEnglish;
+
+  const results: string[] = [];
+  for (const chunk of chunks) {
+    const translated = await translateFn(chunk);
+    results.push(translated || chunk);
+  }
+
+  const joined = results.join(direction === "en2zh" ? "" : " ");
+  try { localStorage.setItem(cacheKey, joined); } catch { /* storage full */ }
+  return joined;
 }
 
 export interface WordForm {
@@ -112,8 +193,74 @@ export interface WordForm {
   forms: { form: string; tags: string }[];
 }
 
+export interface ExampleSentence {
+  english: string;
+  chinese: string;
+  source: string;
+}
+
+export async function fetchExampleSentences(word: string): Promise<ExampleSentence[]> {
+  const fromTatoeba = async (): Promise<ExampleSentence[]> => {
+    const res = await fetch(
+      `https://tatoeba.org/en/api/v0/search?query=${encodeURIComponent(word)}&from=eng&to=cmn`
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const sentences = data?.results || [];
+    return sentences.slice(0, 8).map((s: { text: string; translations: [string, { text: string }][] }) => ({
+      english: s.text,
+      chinese: s.translations?.[0]?.[0]?.text || "",
+      source: "Tatoeba",
+    })).filter((s: ExampleSentence) => s.english);
+  };
+
+  const fromDictionary = async (): Promise<ExampleSentence[]> => {
+    const results: ExampleSentence[] = [];
+    const dictRes = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if (!dictRes.ok) return results;
+    const dictData = await dictRes.json();
+    if (!Array.isArray(dictData)) return results;
+    for (const entry of dictData) {
+      for (const m of entry.meanings || []) {
+        for (const d of m.definitions || []) {
+          if (d.example && results.length < 6) {
+            const cn = await translateToChinese(d.example);
+            results.push({
+              english: d.example,
+              chinese: cn || "",
+              source: "词典",
+            });
+          }
+        }
+      }
+    }
+    return results;
+  };
+
+  // Fetch both sources in parallel
+  const [tatoebaResults, dictResults] = await Promise.all([
+    fromTatoeba().catch(() => []),
+    fromDictionary().catch(() => []),
+  ]);
+
+  // Merge: Tatoeba first, then dictionary
+  const seen = new Set<string>();
+  const merged: ExampleSentence[] = [];
+  for (const r of [...tatoebaResults, ...dictResults]) {
+    if (!seen.has(r.english)) {
+      seen.add(r.english);
+      merged.push(r);
+    }
+  }
+  return merged;
+}
+
 const vocabLists: Record<string, string[]> = {
   "中考核心词汇": ["abandon", "ability", "abroad", "absent", "absorb", "abstract", "abundant", "academic", "accelerate", "accent", "accept", "access", "accident", "accommodation", "accompany", "accomplish", "account", "accurate", "accuse", "achieve", "achievement", "acid", "acknowledge", "acquire", "adapt", "addict", "adequate", "adjust", "admire", "admit", "adopt", "advance", "advantage", "adventure", "advertise", "advice", "affair", "affect", "afford", "aggressive", "agreement", "agriculture", "aircraft", "alarm", "album", "alcohol", "allow", "amaze", "ambition", "amount", "amuse", "analyze", "ancestor", "ancient", "anger", "anniversary", "announce", "annual", "anxious", "apart", "apology", "apparent", "appeal", "appetite", "application", "appointment", "appreciate", "approach", "appropriate", "approve", "architecture", "argue", "arise", "arrange", "arrest", "article", "artificial", "aspect", "assess", "assign", "assist", "associate", "assume", "atmosphere", "attach", "attack", "attempt", "attend", "attention", "attitude", "attract", "audience", "author", "authority", "automatic", "available", "avenue", "average", "avoid", "award", "aware", "awful", "bachelor", "background", "balance", "ban", "band", "bankrupt", "bargain", "barrier", "basic", "battle", "bear", "beauty", "behave", "behavior", "belief", "belong", "bend", "benefit", "bitter", "blame", "blanket", "bleed", "bless", "block", "board", "boil", "border", "bore", "bother", "bottom", "bound", "branch", "brand", "brave", "breath", "brief", "brilliant", "broadcast", "budget", "bunch", "burden", "burst", "cabin", "campaign", "cancel", "candidate", "capable", "capacity", "capital", "capture", "career", "carpet", "carve", "catalog", "category", "cause", "caution", "ceiling", "celebrate", "central", "ceremony", "certificate", "chain", "challenge", "champion", "channel", "chapter", "character", "characteristic", "charge", "charity", "chart", "chase", "chemical", "chief", "circumstance", "citizen", "civil", "civilization", "claim", "classic", "classify", "climate", "clinic", "coach", "collapse", "collection", "column", "combine", "comedy", "comfort", "command", "comment", "commerce", "commercial", "commission", "commit", "communication", "companion", "company", "compare", "compensate", "compete", "competence", "complaint", "complex", "component", "compose", "composition", "comprehension", "concentrate", "concept", "concern", "conclude", "concrete", "condition", "conduct", "conference", "confidence", "confirm", "conflict", "confuse", "congratulate", "connect", "conscience", "conscious", "consequence", "conservative", "consider", "consistent", "constant", "construct", "construction", "consume", "consumer", "contact", "contain", "contemporary", "content", "context", "continent", "continue", "contract", "contrast", "contribute", "contribution", "convenient", "conversation", "convince", "cooperate", "corporation", "correct", "correspond", "county", "court", "crash", "create", "creative", "credit", "crime", "criminal", "crisis", "critical", "crucial", "cultivate", "culture", "cure", "curious", "currency", "current", "curriculum", "custom", "data", "database", "deadline", "debate", "debt", "decade", "declare", "decline", "decorate", "decrease", "defeat", "defence", "defend", "define", "definite", "degree", "delay", "delicate", "deliver", "demand", "demonstrate", "department", "departure", "depend", "deposit", "depress", "describe", "description", "desert", "deserve", "design", "desire", "desperate", "destination", "destroy", "detail", "detect", "determine", "develop", "device", "devote", "dialogue", "dictation", "diet", "differ", "digest", "digital", "dilemma", "dimension", "diploma", "director", "disability", "disappoint", "disaster", "discipline", "discount", "discover", "discovery", "discrimination", "disease", "dismiss", "display", "distance", "distinguish", "distribute", "district", "disturb", "diverse", "division", "document", "domestic", "dominate", "donate", "draft", "dramatic", "due", "duration", "dynamic", "eager", "earn", "earthquake", "economic", "edition", "editor", "educate", "education", "effective", "efficient", "effort", "elder", "elect", "electricity", "electronic", "element", "embarrass", "emerge", "emotion", "emperor", "emphasis", "employ", "employee", "employer", "employment", "enable", "encounter", "encourage", "energy", "engage", "engine", "enormous", "ensure", "enterprise", "entertain", "enthusiasm", "entire", "environment", "equal", "equipment", "error", "escape", "essay", "essential", "establish", "estate", "estimate", "evaluate", "event", "evidence", "evident", "evolution", "exact", "examine", "exchange", "excite", "executive", "exercise", "exhibition", "exist", "expand", "expect", "expense", "experiment", "expert", "explain", "explicit", "exploit", "explore", "export", "expose", "express", "extension", "extent", "external", "extraordinary", "extreme", "facility", "factor", "faith", "false", "familiar", "fashion", "fault", "favor", "feast", "feature", "federal", "female", "fiction", "fierce", "figure", "finance", "financial", "firework", "flame", "flash", "flesh", "flexible", "flight", "float", "flood", "flourish", "flow", "focus", "fold", "forbid", "forecast", "foreign", "formal", "former", "fortune", "foundation", "fountain", "fragile", "framework", "frequent", "frontier", "function", "fund", "fundamental", "funeral", "furthermore", "gain", "gallery", "gap", "garbage", "gas", "gather", "gene", "general", "generate", "generation", "generous", "genius", "genuine", "gesture", "global", "globe", "glory", "goods", "govern", "grace", "gradual", "graduate", "grain", "grand", "grant", "grasp", "gravity", "greenhouse", "guarantee", "guidance", "guilty", "gymnasium", "handle", "harbour", "hardship", "harm", "harmony", "harvest", "hatred", "heading", "headline", "heaven", "heel", "height", "hesitate", "highlight", "highway", "historic", "holy", "honour", "horizon", "horrible", "household", "housing", "humour", "hunt", "hurricane", "hydrogen", "ideal", "identity", "ignore", "illegal", "illustrate", "image", "imagination", "immigrant", "impact", "import", "impress", "impression", "improve", "incident", "include", "income", "increase", "indeed", "independent", "indicate", "individual", "industry", "infer", "inflation", "influence", "inform", "information", "initial", "initiative", "injure", "innocent", "innovation", "input", "inquire", "insert", "inspect", "inspire", "instant", "instead", "institute", "institution", "instruction", "instrument", "insurance", "intellectual", "intelligence", "intend", "intense", "intention", "interact", "interest", "internal", "international", "internet", "interpret", "interrupt", "interview", "invade", "invent", "invest", "investigate", "investment", "involve", "isolate", "issue", "item", "jam", "joint", "journal", "journey", "judge", "justice", "justify", "keen", "kindergarten", "laboratory", "lack", "landscape", "lantern", "launch", "leading", "league", "leak", "leather", "legal", "legend", "leisure", "length", "lesson", "liberal", "liberate", "liberty", "lifestyle", "lightning", "likely", "limit", "link", "liquid", "literature", "lively", "loan", "local", "locate", "location", "logical", "loose", "lounge", "loyal", "luggage", "lung", "luxury", "machinery", "magic", "magnificent", "maintain", "major", "majority", "manage", "management", "mankind", "manner", "manufacture", "march", "margin", "market", "marriage", "mass", "master", "material", "matter", "mature", "maximum", "measure", "mechanism", "media", "medical", "medium", "memory", "mental", "mention", "merchant", "mercy", "merely", "method", "midnight", "migrate", "mild", "military", "million", "mineral", "minimum", "minister", "minority", "miracle", "miserable", "mission", "mistake", "mixture", "mobile", "moderate", "modest", "monitor", "monument", "mood", "moral", "motion", "motivate", "motor", "mountainous", "mourn", "movement", "murder", "muscle", "museum", "musician", "mutual", "mystery", "nail", "narrow", "nation", "national", "nationality", "native", "natural", "naughty", "necessary", "negative", "neglect", "negotiate", "neighbourhood", "nervous", "network", "nevertheless", "noble", "normal", "notice", "novel", "nowadays", "nowhere", "nuclear", "numerous", "nutrition", "obey", "object", "objective", "observe", "obtain", "obvious", "occasion", "occupy", "occur", "offence", "official", "opera", "operate", "operation", "opinion", "opponent", "opportunity", "oppose", "opposite", "option", "orbit", "ordinary", "organ", "organize", "origin", "original", "otherwise", "outcome", "outdoor", "outstanding", "overcome", "overlook", "overseas", "owe", "pace", "pack", "package", "painful", "panic", "paragraph", "parallel", "parcel", "participate", "particular", "partly", "passage", "passenger", "passive", "patience", "pattern", "pause", "payment", "peaceful", "peak", "penalty", "pension", "perform", "performance", "period", "permanent", "permission", "permit", "personal", "personality", "personnel", "persuade", "phenomenon", "philosophy", "physical", "pilot", "platform", "pleasant", "pleasure", "pledge", "plot", "plus", "poetry", "poison", "policy", "polish", "political", "politician", "politics", "pollution", "popular", "population", "portion", "portrait", "position", "positive", "possess", "possession", "possibility", "potential", "pour", "poverty", "power", "powerful", "practical", "precious", "precise", "predict", "prefer", "preference", "prejudice", "premier", "prepare", "presentation", "preserve", "president", "pressure", "presumably", "pretend", "prevent", "previous", "pride", "primary", "principle", "prior", "priority", "prison", "private", "privilege", "procedure", "process", "produce", "product", "profession", "professional", "profit", "program", "progress", "prohibit", "project", "promise", "promote", "proper", "property", "proportion", "proposal", "prospect", "protect", "protein", "protest", "proud", "prove", "provide", "province", "provision", "psychological", "publication", "publicity", "publish", "pulse", "punctual", "punish", "purchase", "pure", "purpose", "pursue", "qualification", "quality", "quantity", "quit", "race", "racial", "radiation", "range", "rank", "rapid", "rare", "rate", "rather", "raw", "react", "realistic", "reality", "reasonable", "rebel", "reception", "reckon", "recognize", "recommend", "recover", "recreation", "recycle", "reduce", "refer", "referee", "reference", "reflect", "reform", "refresh", "regard", "regardless", "region", "register", "regret", "regular", "reject", "relate", "relationship", "relative", "relax", "release", "relevant", "reliable", "relief", "religion", "rely", "remain", "remark", "remarkable", "remedy", "remote", "remove", "renew", "replace", "represent", "representative", "reputation", "request", "require", "requirement", "reservation", "reserve", "resign", "resist", "resolve", "resource", "respect", "respond", "responsibility", "responsible", "restore", "restriction", "result", "retire", "reveal", "revenue", "review", "revolution", "reward", "ridiculous", "risk", "rival", "rocket", "romantic", "root", "rough", "routine", "royal", "ruin", "rural", "sacred", "sacrifice", "safety", "salary", "satellite", "satisfaction", "satisfy", "scan", "scare", "scatter", "scene", "schedule", "scheme", "scholar", "scientific", "scream", "sculpture", "secondary", "section", "secure", "security", "seek", "seize", "select", "selfish", "seminar", "senior", "sensation", "sensitive", "separate", "sequence", "series", "severe", "shadow", "shallow", "sharp", "shelter", "shift", "shortcoming", "significant", "silence", "similar", "simple", "simplify", "sincere", "situation", "skilful", "skill", "slight", "smart", "smooth", "social", "society", "software", "solar", "solid", "solution", "somehow", "sorrow", "source", "sow", "spare", "specialist", "species", "specific", "spirit", "spiritual", "splendid", "split", "sponsor", "spot", "squeeze", "stable", "stage", "stain", "standard", "starve", "statistics", "status", "steady", "steel", "steep", "stem", "stick", "stimulate", "stock", "storage", "strategy", "strength", "strengthen", "stress", "strike", "structure", "struggle", "studio", "style", "subject", "submit", "subsequent", "substance", "substitute", "succeed", "success", "suffer", "sufficient", "suggest", "suitable", "summarize", "summary", "superb", "superior", "supply", "support", "suppose", "supreme", "surface", "surgeon", "surplus", "surround", "surrounding", "survey", "survive", "suspect", "suspend", "sustain", "swallow", "swear", "symbol", "sympathy", "symptom", "system", "tackle", "talent", "target", "technique", "technology", "telescope", "temporary", "tendency", "tender", "terminal", "territory", "terror", "theme", "theoretical", "therapy", "therefore", "thorough", "thought", "thread", "threat", "thrill", "thrive", "throughout", "thus", "tight", "tissue", "tolerate", "topic", "tough", "tourism", "tournament", "track", "trade", "tradition", "traditional", "tragedy", "transfer", "transform", "translate", "transparent", "transport", "trap", "treasure", "treat", "treaty", "tremble", "trend", "trial", "tribe", "trick", "triumph", "troop", "tropical", "trouble", "truly", "trust", "truth", "tune", "tutor", "typical", "ultimate", "undergo", "underground", "underline", "understand", "undertake", "unemployment", "unfair", "unfortunate", "uniform", "union", "unique", "unite", "unity", "universal", "universe", "university", "update", "upper", "upset", "urban", "urge", "urgent", "usual", "vacant", "vague", "vain", "valid", "valuable", "value", "variety", "various", "vehicle", "venture", "version", "vertical", "vessel", "victim", "violence", "virtue", "virus", "visible", "vision", "visual", "vital", "vivid", "vocabulary", "volume", "voluntary", "volunteer", "wage", "wander", "warmth", "wealth", "weapon", "weather", "website", "wedding", "welfare", "western", "whereas", "whisper", "widespread", "willingness", "wisdom", "withdraw", "witness", "wonder", "worthwhile", "worthy", "youth"],
+  "考研核心词汇": ["abdomen", "abide", "abnormal", "aboard", "abolish", "abound", "abrupt", "absent", "absorb", "abstain", "absurd", "abuse", "accelerate", "acclaim", "accommodate", "accompany", "accomplish", "accord", "account", "accumulate", "accurate", "accuse", "accustom", "achieve", "acknowledge", "acquaint", "acquire", "activate", "acute", "adapt", "addict", "adequate", "adhere", "adjacent", "adjust", "administer", "admire", "admit", "adolescent", "adopt", "adore", "advance", "adverse", "advocate", "aesthetic", "affair", "affect", "affiliate", "affirm", "afflict", "afford", "agenda", "aggravate", "aggregate", "agitate", "agony", "agreeable", "alarm", "alert", "alien", "alienate", "align", "allege", "alleviate", "allocate", "allowance", "alter", "alternate", "amateur", "amaze", "ambiguous", "ambition", "ambitious", "amend", "amid", "ample", "amuse", "analogy", "analyze", "ancestor", "anchor", "anguish", "anniversary", "announce", "annoy", "annual", "anonymous", "anticipate", "anxiety", "apparent", "appeal", "appetite", "applaud", "appliance", "applicable", "apply", "appoint", "appraisal", "appreciate", "approach", "appropriate", "approve", "approximate", "apt", "arbitrary", "architecture", "arise", "arouse", "arrange", "array", "arrogant", "articulate", "artificial", "ascend", "ascertain", "aspect", "aspire", "assault", "assemble", "assert", "assess", "asset", "assign", "assimilate", "assist", "associate", "assume", "assurance", "assure", "atmosphere", "attach", "attain", "attempt", "attend", "attitude", "attorney", "attract", "attribute", "auction", "audience", "authentic", "authorize", "autonomy", "avail", "available", "avenue", "avert", "avoid", "await", "awake", "award", "aware", "awe", "awkward", "backward", "bait", "balance", "ban", "bankrupt", "bargain", "barrel", "barren", "barrier", "beam", "bearing", "beforehand", "behalf", "behave", "beloved", "beneath", "beneficial", "benefit", "betray", "bewilder", "bias", "bind", "bizarre", "blame", "blank", "blast", "blaze", "bleak", "blend", "bless", "block", "bloom", "blossom", "blueprint", "blunder", "blunt", "blur", "boast", "bold", "bolt", "bond", "bonus", "boom", "boost", "border", "bore", "bounce", "bound", "boundary", "boycott", "breach", "breakdown", "breakthrough", "breed", "bribe", "brief", "brilliant", "brink", "brisk", "brittle", "broaden", "browse", "bruise", "brutal", "bubble", "budget", "bulk", "bulletin", "bully", "bump", "bunch", "burden", "bureaucracy", "burst", "cabinet", "calculate", "campaign", "cancel", "candidate", "capable", "capacity", "captive", "capture", "cardinal", "career", "cargo", "carve", "catalog", "catastrophe", "category", "cater", "caution", "cease", "celebrate", "census", "challenge", "champion", "channel", "chaos", "character", "characterize", "charity", "charm", "charter", "chase", "cherish", "chronic", "circuit", "circulate", "circumstance", "cite", "civilian", "civilization", "claim", "clarify", "clash", "classic", "classify", "clause", "client", "climate", "cling", "clinic", "cluster", "clutch", "coalition", "cognitive", "coherent", "coincide", "collaborate", "collapse", "colleague", "collective", "collide", "colonial", "combat", "combine", "commemorate", "commence", "commend", "comment", "commerce", "commission", "commit", "commodity", "commonplace", "communicate", "community", "commute", "compact", "comparable", "comparative", "compassion", "compatible", "compel", "compensate", "compete", "competent", "competitive", "compile", "complement", "complex", "complicate", "comply", "component", "compose", "composite", "compound", "comprehend", "comprehensive", "compress", "comprise", "compromise", "compulsory", "conceal", "concede", "conceive", "concentrate", "concept", "conception", "concern", "concession", "concise", "conclude", "concrete", "condemn", "condense", "condition", "conduct", "confer", "confess", "confidence", "confine", "confirm", "conflict", "conform", "confront", "confuse", "congress", "conquer", "conscience", "conscious", "consecutive", "consensus", "consent", "consequence", "conservation", "conservative", "considerable", "considerate", "consistent", "consolidate", "conspicuous", "constant", "constituent", "constitute", "constrain", "construct", "consult", "consume", "contact", "contaminate", "contemplate", "contemporary", "contempt", "contend", "contest", "context", "contract", "contradict", "contrary", "contrast", "contribute", "contrive", "controversial", "controversy", "convenient", "convention", "conventional", "converge", "conversely", "convert", "convey", "convict", "conviction", "convince", "cooperate", "coordinate", "cope", "cord", "corporate", "correlate", "correspond", "corrode", "corrupt", "council", "counsel", "counterpart", "courtesy", "crack", "craft", "crash", "create", "credit", "crew", "crime", "cripple", "crisis", "criterion", "critical", "crucial", "crude", "crush", "cultivate", "cunning", "curb", "currency", "current", "curriculum", "curse", "customary", "cynical", "damage", "dazzle", "deadline", "deadly", "debate", "debt", "decade", "decay", "deceive", "decent", "declaration", "decline", "decorate", "dedicate", "deduce", "deem", "defect", "deficiency", "define", "definite", "defy", "degenerate", "delegate", "deliberate", "delicate", "deliver", "democracy", "demonstrate", "denial", "denote", "denounce", "dense", "depart", "depict", "deplete", "deploy", "deposit", "depreciate", "depress", "deprive", "deputy", "derive", "descend", "deserve", "designate", "desirable", "desolate", "despair", "desperate", "despise", "destine", "destiny", "destructive", "detach", "detail", "detain", "detect", "deteriorate", "determine", "devastate", "develop", "deviate", "device", "devise", "devote", "diagnose", "dictate", "differentiate", "diffuse", "digest", "digital", "dignity", "dilemma", "diligent", "dilute", "diminish", "diploma", "diplomat", "directory", "disable", "disastrous", "discard", "discern", "discharge", "discipline", "disclose", "discount", "discourse", "discreet", "discrepancy", "discriminate", "disgrace", "disguise", "disgust", "dismay", "dismiss", "disorder", "disperse", "displace", "display", "disposal", "dispose", "dispute", "disregard", "disrupt", "dissipate", "dissolve", "distance", "distil", "distinct", "distinguish", "distort", "distract", "distress", "distribute", "disturb", "diverse", "diversion", "divert", "dividend", "divine", "divorce", "dock", "doctrine", "document", "domain", "domestic", "dominant", "dominate", "donate", "doom", "dose", "draft", "drain", "dramatic", "drastic", "dread", "drift", "drought", "dual", "dubious", "dump", "duplicate", "durable", "duration", "dwell", "dynamic", "earnest", "echo", "eclipse", "ecological", "economic", "edible", "edit", "effective", "efficiency", "ego", "eject", "elaborate", "elapse", "elastic", "elect", "elegant", "element", "elevate", "elicit", "eligible", "eliminate", "elite", "eloquent", "embark", "embarrass", "embed", "embody", "embrace", "emerge", "emergency", "emigrate", "eminent", "emit", "emotion", "emphasis", "empire", "empirical", "employ", "empower", "enable", "enclose", "encounter", "encourage", "endeavor", "endow", "endure", "enforce", "engage", "enhance", "enlighten", "enormous", "enrich", "enroll", "ensure", "entail", "enterprise", "entertain", "enthusiasm", "entitle", "entity", "entrepreneur", "entry", "environment", "envisage", "envision", "epidemic", "episode", "equality", "equation", "equip", "equivalent", "era", "erase", "erect", "erode", "erupt", "escalate", "essence", "essential", "establish", "estate", "esteem", "estimate", "eternal", "ethic", "ethnic", "evacuate", "evaluate", "evaporate", "eventual", "evidence", "evident", "evil", "evoke", "evolution", "evolve", "exaggerate", "exceed", "excel", "exception", "exceptional", "excerpt", "excess", "excessive", "exchange", "excitement", "exclude", "exclusive", "execute", "executive", "exemplify", "exempt", "exert", "exhaust", "exhibit", "exile", "exotic", "expand", "expel", "expend", "expenditure", "expertise", "expire", "explicit", "exploit", "explore", "explosive", "export", "expose", "exquisite", "extend", "extensive", "extent", "external", "extinct", "extinguish", "extract", "extraordinary", "extravagant", "extreme", "fabric", "fabricate", "facilitate", "facility", "factor", "faculty", "fade", "fake", "famine", "fancy", "fantasy", "fascinate", "fashion", "fatal", "fatigue", "feasible", "federal", "feeble", "feedback", "fertile", "fiction", "fierce", "figure", "filter", "finance", "finite", "fixture", "flame", "flap", "flare", "flaw", "flee", "fleet", "flexible", "flock", "flourish", "fluctuate", "fluent", "flush", "focus", "forecast", "foremost", "forge", "formidable", "formula", "formulate", "forthcoming", "fortune", "forum", "fossil", "foster", "foul", "foundation", "fraction", "fracture", "fragile", "fragment", "framework", "frank", "fraud", "freight", "frequency", "friction", "frontier", "frown", "frustrate", "fulfill", "function", "fundamental", "furious", "furnish", "furthermore", "fury", "fuse", "fuss", "futile", "galaxy", "gamble", "gap", "gasp", "gauge", "gaze", "generalize", "generate", "generous", "genetic", "genius", "genuine", "gesture", "gigantic", "glamour", "glimpse", "glitter", "global", "gloom", "glorious", "glow", "gorgeous", "gossip", "govern", "grace", "gracious", "gradual", "grand", "grant", "graphic", "grasp", "grateful", "gratitude", "grave", "gravity", "graze", "grieve", "grim", "grin", "grind", "grip", "groan", "gross", "guarantee", "guideline", "guilt", "habitat", "hail", "halt", "hamper", "handicap", "handle", "harass", "hardship", "harm", "harmony", "harness", "harsh", "hasty", "hatred", "haunt", "hazard", "heap", "hedge", "heighten", "heir", "heritage", "hierarchy", "highlight", "hinder", "hint", "historic", "hitherto", "hoist", "hollow", "homogeneous", "horizon", "horror", "hospitality", "hostage", "hostile", "household", "huddle", "humane", "humanity", "humble", "humiliate", "hurl", "hurricane", "hypothesis", "hysterical", "identical", "identify", "ideology", "ignite", "ignorance", "ignorant", "illiterate", "illuminate", "illusion", "illustrate", "imaginative", "imitate", "immense", "immerse", "immigrant", "immune", "impact", "impair", "impart", "impatient", "imperative", "impetus", "implement", "implication", "implicit", "imply", "impose", "impress", "impulse", "incentive", "incidence", "incidentally", "incline", "incorporate", "increasingly", "incredible", "incur", "independent", "index", "indicate", "indifferent", "indignant", "indispensable", "individual", "induce", "indulge", "industrialize", "inevitable", "infant", "infect", "infer", "inferior", "infinite", "inflation", "influence", "inform", "ingenious", "ingredient", "inhabit", "inherent", "inherit", "initiate", "initiative", "inject", "innovation", "innumerable", "input", "inquire", "insert", "insight", "inspect", "inspiration", "install", "instinct", "institute", "instrument", "insulate", "insult", "insurance", "intact", "integral", "integrate", "integrity", "intellectual", "intelligent", "intense", "intensive", "intention", "interact", "interfere", "interim", "interior", "internal", "interpret", "interval", "intervene", "intimate", "intricate", "intrigue", "intrinsic", "intuition", "invade", "invalid", "invariably", "investigate", "investment", "invisible", "invoke", "involve", "irrespective", "irritate", "isolate", "issue", "jealous", "jeopardize", "jog", "joint", "journal", "judicial", "junction", "junior", "jury", "justice", "justify", "juvenile", "keen", "kidnap", "kindle", "knit", "knot", "label", "lag", "landscape", "latent", "lateral", "latitude", "launch", "laundry", "layman", "layout", "leaflet", "lease", "legacy", "legal", "legend", "legislate", "legitimate", "leisure", "liability", "liberal", "liberate", "likewise", "limitation", "linear", "linger", "literacy", "literally", "literary", "lobby", "locality", "locate", "logical", "longitude", "loom", "lounge", "loyalty", "lump", "lure", "luxury", "machinery", "magistrate", "magnify", "magnitude", "maintain", "majesty", "manifest", "manipulate", "manner", "manufacture", "manuscript", "margin", "marginal", "marine", "massacre", "massive", "masterpiece", "mate", "mechanism", "meditate", "melody", "memo", "memorial", "merchandise", "mercy", "merge", "merit", "metropolitan", "migrate", "militant", "mingle", "miniature", "minimize", "minimum", "minority", "miracle", "misfortune", "mission", "mobilize", "mock", "moderate", "modest", "modify", "momentum", "monetary", "monitor", "monopoly", "monotonous", "monster", "mortal", "mortgage", "motion", "motivate", "mount", "mourn", "multiple", "multiply", "municipal", "mute", "mutter", "mutual", "mysterious", "myth", "naive", "narrative", "nasty", "negative", "neglect", "negligible", "negotiate", "neutral", "nevertheless", "nightmare", "noble", "nominal", "nominate", "notable", "notify", "notion", "notorious", "nourish", "novel", "novelty", "nuisance", "nurture", "nutrition", "oath", "obedience", "objection", "objective", "obligation", "oblige", "obscure", "observation", "obsession", "obsolete", "obstacle", "obvious", "occasion", "occupy", "occurrence", "odd", "offend", "offensive", "offset", "ongoing", "operate", "opponent", "oppose", "oppress", "opt", "optimistic", "option", "orbit", "organ", "orient", "origin", "original", "originate", "ornament", "outbreak", "outcome", "outfit", "outline", "outlook", "output", "outrage", "outset", "outstanding", "overall", "overcome", "overflow", "overhead", "overhear", "overlap", "overlook", "overnight", "overtake", "overthrow", "overtime", "overwhelm", "owe", "oxygen", "ozone", "pact", "panel", "panic", "paradox", "parallel", "paralyze", "parameter", "parcel", "partial", "participant", "participate", "passion", "passive", "pastime", "patent", "pathetic", "patriotic", "patrol", "patron", "pattern", "peculiar", "peer", "penalty", "penetrate", "perceive", "periodical", "perish", "permanent", "permeate", "permit", "perpetual", "persecute", "persevere", "persist", "personality", "personnel", "perspective", "persuade", "pessimistic", "petition", "phase", "phenomenon", "philosophy", "physical", "physician", "pierce", "pioneer", "pipeline", "plague", "plead", "pledge", "plight", "plunge", "pointless", "poison", "poke", "policy", "polish", "poll", "ponder", "populate", "portion", "portrait", "portray", "pose", "positive", "possess", "postpone", "posture", "potential", "poverty", "practitioner", "preach", "precede", "precedent", "precise", "predominant", "preferable", "prejudice", "preliminary", "premier", "premium", "prescribe", "preserve", "preside", "prestige", "presumably", "presume", "prevail", "prevalent", "prevent", "previous", "primary", "prime", "primitive", "principal", "principle", "prior", "priority", "privacy", "privilege", "probe", "procedure", "proceed", "proceeding", "proclaim", "productive", "productivity", "profession", "proficiency", "profile", "profit", "profound", "progressive", "prohibit", "project", "prolong", "prominent", "promising", "promote", "prompt", "prone", "proof", "propaganda", "propel", "property", "prophet", "proportion", "proposal", "propose", "prosecute", "prospect", "prosperity", "protective", "protein", "protest", "prototype", "provision", "provoke", "prudence", "psychology", "publication", "publicity", "pump", "punctual", "purchase", "pursue", "pursuit", "qualification", "qualify", "qualitative", "quantify", "quest", "quota", "quote", "racial", "radiant", "radical", "random", "range", "rank", "rash", "rational", "readily", "realistic", "realm", "reap", "reasonable", "reassure", "rebel", "rebellion", "recall", "recede", "receipt", "reception", "recession", "recipe", "recipient", "reciprocal", "reckless", "reckon", "reclaim", "recognition", "recommend", "reconcile", "recover", "recreation", "recruit", "rectify", "recur", "redundant", "refer", "refine", "reflect", "reform", "refrain", "refresh", "refuge", "refund", "refute", "regime", "regulate", "rehearsal", "reinforce", "reject", "relate", "release", "relevant", "reliable", "reliance", "relieve", "reluctant", "rely", "remarkable", "remedy", "remnant", "remote", "render", "renew", "renowned", "representative", "reproach", "reputation", "resemble", "resent", "reservation", "reserve", "resign", "resistance", "resolution", "resolve", "resource", "respective", "respond", "restore", "restrain", "restrict", "resume", "retail", "retain", "retire", "retort", "retreat", "retrieve", "retrospect", "reveal", "revelation", "revenge", "revenue", "reverse", "revise", "revive", "revolt", "revolution", "reward", "rigid", "rigorous", "riot", "ritual", "rival", "robust", "rocket", "romance", "rotten", "roughly", "routine", "royalty", "ruin", "sacrifice", "safeguard", "sanction", "saturate", "savage", "scale", "scandal", "scarce", "scarcely", "scatter", "schedule", "scheme", "scholar", "scope", "scorn", "scramble", "scratch", "screw", "scrutiny", "seal", "sector", "secure", "segment", "seize", "semester", "seminar", "senate", "sensation", "sentiment", "sequence", "serial", "session", "setback", "settlement", "severe", "shatter", "shelter", "shield", "shipment", "shiver", "shortage", "shove", "shrewd", "shrink", "siege", "significance", "significant", "signify", "simplicity", "simulate", "simultaneous", "situated", "skeptical", "sketch", "slack", "slander", "slim", "slogan", "slope", "smash", "snatch", "soak", "soar", "sober", "solemn", "solicitor", "solidarity", "solitary", "sovereign", "span", "spark", "specialize", "species", "specific", "specify", "specimen", "spectacle", "spectator", "spectrum", "speculate", "sphere", "spill", "spin", "splendid", "split", "spokesman", "sponsor", "spontaneous", "squeeze", "stability", "stake", "stale", "standardize", "standpoint", "startle", "statesman", "stationary", "statistics", "steer", "stimulate", "stipulate", "stock", "straightforward", "strain", "strategy", "streamline", "strengthen", "stretch", "stride", "striking", "strive", "stroll", "structure", "stumble", "subjective", "submarine", "submerge", "submit", "subordinate", "subscribe", "subsequent", "subsidy", "substantial", "substitute", "subtle", "subtract", "succession", "sue", "suffice", "sufficient", "suggest", "suicide", "summit", "summon", "superb", "superficial", "superfluous", "superior", "supervise", "supplement", "suppress", "supreme", "surge", "surgery", "surpass", "surrender", "surround", "survey", "survival", "susceptible", "suspect", "suspend", "suspicion", "suspicious", "sustain", "swallow", "swamp", "sway", "swear", "swift", "switch", "symbolic", "sympathetic", "sympathy", "symptom", "synthesis", "systematic", "tackle", "tactic", "tangible", "tariff", "tease", "tedious", "temper", "temporary", "tempt", "tendency", "tender", "tension", "tentative", "terminal", "terminate", "terrain", "terrific", "territory", "testify", "testimony", "texture", "them", "theoretical", "therapy", "thereafter", "thereby", "thorough", "thoughtful", "threaten", "threshold", "thrill", "thrive", "thrust", "tissue", "token", "tolerance", "tolerate", "torment", "torture", "trace", "trait", "transaction", "transcend", "transfer", "transform", "transient", "transition", "transmit", "transparent", "transplant", "treaty", "tremendous", "trend", "trial", "tribe", "tribute", "trigger", "triple", "triumph", "trivial", "tropical", "tumor", "turbulent", "turnover", "twist", "undergo", "undermine", "undertake", "undo", "unfold", "unify", "unique", "universal", "unprecedented", "upgrade", "uphold", "upright", "urban", "urge", "utilize", "utmost", "utter", "vacant", "vaccine", "vague", "vain", "valid", "vanish", "variable", "variation", "vehicle", "veil", "venture", "verdict", "verify", "versatile", "version", "versus", "vessel", "veteran", "vicious", "vigorous", "violate", "violence", "virtual", "virtue", "visible", "vision", "visualize", "vital", "vivid", "vocation", "vulnerable", "wander", "warrant", "waterproof", "weapon", "weary", "weave", "wedge", "welfare", "whereas", "whirl", "wholesome", "widespread", "withdraw", "withhold", "withstand", "witness", "workforce", "worship", "worthwhile", "wound", "wreck", "yawn", "yield", "zeal", "zone"],
+  "考研拓展词汇": ["abolition", "aboriginal", "abound", "abreast", "abridge", "abrupt", "absentee", "absolve", "absorbent", "abstention", "abstinence", "academia", "accessibility", "accomplice", "accountability", "accredit", "accrue", "accusation", "acquit", "activist", "addiction", "adjourn", "adjudicate", "admissible", "adulthood", "adversary", "adversity", "aeronautics", "aesthetics", "affection", "affidavit", "affluent", "aggregate", "agitation", "agrarian", "alchemy", "alienation", "allegation", "allegiance", "allergy", "alloy", "almighty", "alphabetical", "alumnus", "amass", "ambiguity", "amendable", "ammunition", "amphibian", "amplifier", "analogy", "anecdote", "animate", "annex", "annotate", "anonymity", "antenna", "anthem", "anthology", "antibiotic", "antique", "apparel", "appease", "appraisal", "apprentice", "appropriation", "aquatic", "arable", "arbitration", "archaeology", "archives", "ardent", "aria", "aristocrat", "armor", "arson", "arthritis", "artisan", "ascent", "aspiration", "assassinate", "assault", "assertion", "astrology", "astronomy", "asylum", "athletic", "atlas", "atrocity", "audit", "authoritarian", "autobiography", "automation", "avalanche", "aviation", "backdrop", "badger", "bail", "ballot", "bankruptcy", "baptism", "barometer", "barrack", "bastard", "beacon", "benevolent", "besiege", "bibliography", "bilateral", "biography", "biotechnology", "blasphemy", "bloc", "bodyguard", "boiler", "booklet", "booth", "botanical", "botany", "boulevard", "bourgeois", "boycott", "breadth", "bribery", "briefcase", "bureaucrat", "calamity", "calorie", "camouflage", "campus", "cannabis", "canyon", "capitalism", "capsule", "caption", "caravan", "cardiovascular", "cartel", "cascade", "casualty", "catalyst", "cemetery", "censor", "charcoal", "charter", "checkpoint", "chimpanzee", "choreography", "chronicle", "chunk", "circumference", "citizenship", "clamor", "clan", "clearance", "clergy", "cliche", "clone", "coalition", "cocaine", "cocktail", "coeducation", "coerce", "collateral", "colossal", "comet", "commencement", "commentary", "communal", "communism", "commute", "compassionate", "competency", "complicity", "conception", "condemnation", "condolence", "condominium", "confederation", "confiscate", "congestion", "conglomerate", "conjunction", "connoisseur", "conquest", "consecutive", "constituency", "consul", "contention", "continuum", "contraception", "convict", "convoy", "copyright", "coral", "corporal", "corps", "correctional", "cosmetic", "countenance", "counterpart", "coup", "courteous", "credential", "crematorium", "cretin", "crusade", "cube", "curfew", "custody", "cyberspace", "cylinder", "dart", "deacon", "debut", "deceit", "decipher", "decisive", "default", "defendant", "defensive", "deficit", "definitive", "delegate", "delicacy", "delinquent", "demolish", "dental", "depict", "depot", "depreciation", "depression", "designate", "destine", "detention", "deterrent", "detonate", "detour", "diagnosis", "diaspora", "dictatorship", "diplomacy", "disability", "disarmament", "discipline", "disco", "discord", "discretion", "disintegration", "dismantle", "dispensary", "disposition", "dissident", "distill", "diversify", "docket", "dogma", "domesticate", "donor", "dormitory", "downgrade", "downsize", "drainage", "drought", "drowsy", "dub", "dynasty", "ecosystem", "editorial", "efficiency", "election", "electoral", "eligible", "emancipate", "embargo", "embassy", "embryo", "empower", "enact", "enclose", "endorse", "enforcement", "enlighten", "enrollment", "enthusiast", "entrench", "environmental", "envy", "epidemiologist", "equate", "erosion", "escalator", "espionage", "etiquette", "evangelical", "evasion", "eviction", "execution", "exhaustion", "expansion", "expedition", "expel", "exploitation", "exponent", "extortion", "extrude", "eyebrow", "facade", "facet", "famine", "fascism", "feat", "ferment", "ferry", "flair", "flank", "flattery", "foil", "folklore", "foothold", "forensic", "fortify", "fragrance", "franchise", "freelance", "fungus", "furnace", "fusion", "gadget", "gait", "gallant", "gallop", "gangster", "garrison", "genocide", "glacier", "glamour", "gland", "glaze", "gleam", "gospel", "grandeur", "gratuity", "grid", "grievance", "guerrilla", "gunfire", "hack", "hallmark", "handbook", "harassment", "haven", "headway", "heartland", "hectare", "hedonism", "hegemony", "hemisphere", "heroin", "hierarchy", "hike", "hiv", "holocaust", "homestead", "horde", "hormone", "hostage", "humiliation", "hurdle", "hybrid", "hygiene", "hypocrisy", "icon", "idealism", "illicit", "imminent", "immortal", "impartial", "imperial", "imprison", "improper", "inadequate", "inaugural", "incumbent", "indict", "indigenous", "inequality", "infamous", "infantry", "inflict", "informant", "infrastructure", "inherent", "injunction", "inmate", "insanity", "insurgent", "intake", "intercept", "interim", "interlude", "interrogation", "intersection", "intestine", "intimidation", "intrude", "inventory", "irony", "irrigation", "itinerary", "jargon", "jeopardy", "jihad", "jurisdiction", "juror", "juvenile", "kidnap", "kilometer", "laborer", "landmark", "landslide", "lawsuit", "legitimacy", "lengthy", "lesbian", "liaison", "limelight", "lineage", "liquor", "litigation", "livelihood", "locus", "logistics", "lottery", "lucrative", "lynch", "magistrate", "malaria", "malnutrition", "mammal", "mandate", "manifesto", "mansion", "marathon", "martyr", "masculine", "massacre", "masterpiece", "maternal", "medieval", "mediator", "medicaid", "memorandum", "mercenary", "metaphor", "methodology", "mileage", "militia", "millennium", "misconduct", "missing", "mob", "module", "momentum", "monarchy", "morbid", "mortality", "municipal", "mutiny", "narcotic", "navigate", "negligence", "nominee", "nonprofit", "nostalgia", "notable", "nourish", "obituary", "obscene", "odds", "offspring", "omen", "onset", "ordinance", "outcry", "outlaw", "outpost", "outrage", "overhaul", "overt", "paradigm", "paste", "pathology", "pedestrian", "pedigree", "penal", "peril", "perimeter", "persecution", "petroleum", "pharmaceutical", "phoenix", "plaintiff", "plateau", "plausible", "plumber", "poacher", "polytechnic", "populace", "posterity", "postpone", "pragmatic", "preamble", "predecessor", "predicament", "premature", "prenatal", "prescription", "prodigy", "propaganda", "prosecutor", "protocol", "province", "prowess", "proximity", "psychiatrist", "puberty", "quarantine", "quota", "racism", "ransom", "ratification", "referendum", "refugee", "regulator", "reiterate", "remainder", "remission", "renaissance", "repeal", "repercussion", "repression", "requisite", "resentment", "retaliation", "revision", "rhetoric", "rupture", "sabotage", "salvage", "sanctuary", "scenario", "secular", "segregation", "seizure", "sermon", "shuttle", "siege", "slander", "smuggle", "souvenir", "speculation", "stalemate", "staple", "stereotype", "strangle", "subscription", "subsidy", "syndicate", "tactics", "tempo", "terrace", "throne", "treason", "trigger", "tuition", "turmoil", "ultimatum", "unilateral", "uprising", "vaccine", "verdict", "verge", "vigilante", "villain", "waiver", "wardrobe", "warlord", "warranty", "whistleblower", "wildlife", "witchcraft", "workload", "wrestle", "yacht", "zealot"],
+  "英语四级词汇": ["abandon", "absorb", "abstract", "abundant", "academic", "accelerate", "access", "accommodate", "companion", "accompany", "accomplish", "accumulate", "accurate", "accuse", "achieve", "acknowledge", "acquire", "adapt", "adequate", "adjust", "administration", "admire", "admission", "adopt", "advance", "advantage", "advertise", "affect", "affection", "afford", "agenda", "aggressive", "agreement", "agriculture", "allocate", "alter", "alternative", "amaze", "ambassador", "ambition", "amount", "amuse", "analyze", "ancestor", "anchor", "ancient", "anniversary", "announce", "annual", "anticipate", "anxiety", "apparent", "appeal", "appetite", "appliance", "application", "apply", "appoint", "appreciate", "approach", "appropriate", "approve", "arise", "arouse", "arrange", "arrest", "artificial", "aspect", "assemble", "assess", "assign", "assist", "associate", "assume", "atmosphere", "attach", "attain", "attempt", "attend", "attitude", "attract", "attribute", "audience", "authority", "automatic", "available", "avenue", "average", "avoid", "await", "award", "aware", "awkward", "background", "backward", "balance", "ban", "bankruptcy", "barrier", "battery", "bear", "behalf", "behave", "beloved", "beneath", "benefit", "bitter", "blame", "blanket", "blast", "bleed", "blend", "bless", "block", "bloom", "boast", "bold", "bond", "boom", "border", "bore", "bother", "bounce", "bound", "boundary", "brand", "brave", "breach", "breakdown", "breed", "brief", "brilliant", "broadcast", "budget", "burden", "burst", "cabinet", "campaign", "cancel", "capable", "capacity", "capture", "career", "cargo", "catalogue", "category", "caution", "cease", "celebrate", "ceremony", "challenge", "champion", "channel", "chaos", "character", "characteristic", "charity", "charm", "chase", "chemical", "cherish", "chief", "circumstance", "civilian", "civilization", "claim", "clarify", "classic", "classify", "clause", "client", "climate", "collapse", "colleague", "collection", "collision", "colonial", "column", "combat", "combine", "comedy", "command", "comment", "commerce", "commission", "commit", "communicate", "community", "companion", "comparable", "comparative", "compare", "compel", "compensate", "compete", "competitive", "complain", "complex", "complicate", "component", "compose", "comprise", "compromise", "concentrate", "concept", "concern", "conclude", "concrete", "condition", "conduct", "conference", "confidence", "confine", "confirm", "conflict", "confront", "confuse", "congress", "connect", "conscience", "conscious", "consequence", "conservative", "considerable", "considerate", "consistent", "constant", "constitute", "construct", "consult", "consume", "contact", "contain", "contemporary", "contend", "content", "contest", "context", "contract", "contradict", "contrary", "contrast", "contribute", "controversial", "convenience", "convention", "conversation", "convert", "convey", "convince", "cooperate", "coordinate", "cope", "corporate", "correspond", "corruption", "council", "counsel", "counter", "crash", "create", "creative", "credit", "crew", "crime", "crisis", "critical", "crucial", "crude", "cultivate", "culture", "curb", "curious", "current", "curriculum", "custom", "damage", "deadline", "debate", "debt", "decade", "decay", "deceive", "declaration", "decline", "decorate", "decrease", "defeat", "defend", "deficiency", "define", "definite", "delegate", "deliberate", "delicate", "deliver", "demand", "democracy", "demonstrate", "dense", "deny", "depart", "depend", "depict", "deposit", "depress", "deprive", "derive", "descend", "describe", "deserve", "design", "desirable", "desperate", "destiny", "destroy", "destructive", "detail", "detect", "determine", "develop", "device", "devote", "diagnose", "differ", "digest", "digital", "dignity", "dilemma", "diminish", "diplomat", "disable", "disappear", "disaster", "discard", "discharge", "discipline", "discount", "discrimination", "disguise", "disgust", "dismiss", "disorder", "display", "disposal", "dispose", "dispute", "dissolve", "distance", "distinct", "distinguish", "distract", "distress", "distribute", "district", "disturb", "diverse", "divorce", "document", "domestic", "dominant", "dominate", "donate", "draft", "drain", "dramatic", "drift", "duration", "dynamic", "earnest", "earthquake", "economic", "edition", "educate", "effective", "efficiency", "elaborate", "elect", "elegant", "element", "eliminate", "embarrass", "embrace", "emerge", "emergency", "emotion", "emphasis", "employ", "enable", "enclose", "encounter", "encourage", "enforce", "engage", "engine", "enhance", "enormous", "ensure", "enterprise", "entertain", "enthusiasm", "entire", "entitle", "entry", "environment", "episode", "equality", "equip", "equivalent", "era", "escape", "essential", "establish", "estate", "estimate", "evaluate", "eventually", "evidence", "evident", "evil", "evolution", "evolve", "exaggerate", "examine", "exceed", "exception", "excess", "exchange", "excitement", "exclude", "exclusive", "execute", "exert", "exhaust", "exhibit", "expand", "expect", "expense", "experiment", "expert", "explain", "explicit", "exploit", "explore", "explosion", "export", "expose", "extend", "extensive", "extent", "external", "extinguish", "extraordinary", "extreme", "fabric", "facilitate", "facility", "factor", "faculty", "faith", "famine", "fascinate", "fashion", "fatal", "feasible", "feature", "federal", "fertile", "fiction", "fierce", "figure", "finance", "flame", "flee", "flexible", "flock", "flourish", "fluctuate", "focus", "forbid", "forecast", "forge", "formal", "format", "former", "formula", "fortune", "foundation", "fraction", "fragile", "framework", "freight", "frequency", "frontier", "frown", "frustrate", "fulfill", "function", "fundamental", "furthermore", "gallery", "gap", "generate", "generous", "genius", "genuine", "gesture", "giant", "glimpse", "global", "glorious", "grab", "grace", "gradual", "grant", "grasp", "grateful", "grave", "guarantee", "guidance", "habitat", "halt", "handle", "hardship", "harmony", "harness", "harsh", "hazard", "highlight", "hinder", "horizon", "household", "humble", "humorous", "identical", "identify", "ignorance", "ignorant", "illegal", "illustrate", "imagination", "imitate", "immense", "immigrant", "impact", "implement", "implication", "imply", "import", "impose", "impress", "incident", "inclination", "income", "incorporate", "increase", "increasingly", "incredible", "independent", "indicate", "individual", "induce", "industry", "inevitable", "infant", "infect", "infer", "inflation", "influence", "inform", "ingredient", "inhabit", "inherit", "initial", "initiative", "injection", "injure", "innocent", "innovation", "input", "inquire", "insert", "insight", "inspect", "inspire", "install", "instance", "instinct", "institute", "institution", "instrument", "insult", "insurance", "integrate", "intellectual", "intelligence", "intense", "intention", "interact", "interfere", "interior", "internal", "interpret", "interval", "intervene", "intimate", "invade", "investigate", "investment", "invisible", "involve", "isolate", "issue", "journal", "judgment", "jungle", "junior", "justice", "justify", "keen", "laboratory", "landscape", "launch", "leading", "leak", "legal", "legend", "legislation", "legitimate", "leisure", "liability", "liberal", "liberty", "license", "likewise", "limitation", "literacy", "literally", "literary", "loan", "locate", "logical", "loyalty", "luxury", "machinery", "magnificent", "maintain", "majority", "manage", "manifest", "manipulate", "manufacture", "margin", "massive", "masterpiece", "mature", "maximum", "mechanism", "medium", "memorial", "mental", "mention", "merchant", "mercy", "military", "minimum", "minister", "minority", "miracle", "miserable", "mission", "mobile", "moderate", "modest", "modify", "monitor", "monument", "moral", "moreover", "mortgage", "motion", "motivate", "multiple", "mutual", "mysterious", "narrative", "negative", "neglect", "negotiate", "neighborhood", "network", "neutral", "nevertheless", "noble", "nominated", "notable", "noticeable", "notify", "notion", "nourish", "novel", "nuisance", "numerous", "nutrition", "objection", "objective", "obligation", "observation", "observe", "obstacle", "obtain", "obvious", "occasion", "occupy", "occurrence", "offend", "offensive", "operation", "opponent", "opportunity", "oppose", "optimistic", "option", "ordinary", "organize", "origin", "original", "outcome", "outline", "outlook", "output", "outstanding", "overcome", "overlook", "overseas", "overwhelm", "ownership", "oxygen", "pace", "package", "panel", "panic", "parallel", "participate", "particular", "passion", "passive", "patience", "patriot", "pattern", "payment", "peculiar", "penalty", "pension", "perceive", "performance", "permanent", "permission", "persist", "personality", "personnel", "perspective", "persuade", "phenomenon", "philosophy", "physical", "pioneer", "platform", "plausible", "pledge", "plunge", "poison", "policy", "pollution", "popularity", "portion", "portrait", "portray", "pose", "positive", "possess", "potential", "poverty", "practical", "precaution", "precede", "precise", "predict", "preferable", "prejudice", "preliminary", "premise", "premium", "prescribe", "preserve", "pressure", "presume", "prevail", "prevent", "previous", "primary", "principle", "prior", "priority", "privacy", "privilege", "procedure", "proceed", "process", "productive", "profession", "profit", "profound", "program", "prohibit", "project", "prominent", "promote", "prompt", "proof", "property", "proportion", "proposal", "propose", "prospect", "prosperity", "protective", "protein", "protest", "provided", "province", "provision", "psychological", "publication", "publicity", "publish", "punctual", "purchase", "pursue", "qualification", "qualify", "quantity", "quest", "racial", "radical", "random", "range", "rank", "rapid", "rare", "rational", "readily", "realistic", "realm", "reasonable", "rebel", "recession", "recognition", "recommend", "reconcile", "recover", "reduction", "refer", "reform", "regarding", "region", "register", "regulate", "reinforce", "reject", "relate", "release", "relevant", "reliable", "relief", "relieve", "religion", "reluctant", "rely", "remarkable", "remedy", "remote", "render", "renew", "represent", "reputation", "request", "require", "resemble", "reservation", "reserve", "resign", "resist", "resolution", "resolve", "resort", "resource", "respond", "restore", "restrain", "restrict", "resume", "retail", "retain", "retire", "retreat", "reveal", "revenue", "reverse", "review", "revolution", "reward", "rigid", "rival", "romantic", "roughly", "routine", "royal", "sacrifice", "sake", "salary", "sample", "sanction", "satellite", "satisfaction", "scale", "scan", "scandal", "scarcely", "scatter", "scenery", "schedule", "scheme", "scholar", "scope", "secondary", "section", "secure", "security", "segment", "select", "semester", "senate", "senior", "sensitive", "sequence", "session", "settlement", "severe", "shelter", "shield", "shift", "shortage", "shrink", "significance", "significant", "simplicity", "simulate", "sincere", "situated", "skeptical", "sketch", "slim", "smash", "soar", "solar", "solemn", "solution", "somewhat", "sophisticated", "sorrow", "source", "span", "specialize", "species", "specific", "specimen", "spectacle", "sphere", "splendid", "split", "spokesman", "sponsor", "spontaneous", "stability", "stable", "stake", "standpoint", "startle", "starve", "statistic", "status", "steady", "steep", "stem", "stimulate", "strategy", "streamline", "strengthen", "stretch", "striking", "strive", "stroke", "structure", "struggle", "studio", "subjective", "submit", "subordinate", "subsequent", "substance", "substantial", "substitute", "subtract", "suburb", "succession", "sufficient", "summit", "superb", "superficial", "superior", "supervise", "supplement", "survey", "survive", "suspect", "suspend", "suspicious", "sustain", "swallow", "swear", "swift", "switch", "symbol", "sympathy", "symptom", "synthetic", "systematic", "tackle", "talent", "tame", "target", "technique", "technology", "temporary", "tendency", "tender", "tension", "terminal", "territory", "terror", "testify", "theme", "theoretical", "therapy", "thereby", "thorough", "thoughtful", "threaten", "thrive", "tissue", "tolerate", "topic", "torture", "tough", "trace", "tradition", "tragedy", "trait", "transaction", "transfer", "transform", "transition", "transmit", "transparent", "transport", "treaty", "tremble", "tremendous", "trend", "trial", "trigger", "triumph", "tropical", "tuition", "twist", "typical", "ultimate", "undergo", "undermine", "undertake", "unemployment", "unfold", "unfortunate", "unique", "universal", "unprecedented", "urban", "urge", "urgent", "utilize", "utmost", "utter", "vacant", "vague", "vain", "valid", "vanish", "variable", "variation", "vast", "vehicle", "venture", "version", "vessel", "veteran", "via", "vibrate", "vice", "victim", "vigorous", "violate", "violence", "virtual", "virtue", "visible", "vision", "visual", "vital", "vivid", "volume", "voluntary", "wander", "warrant", "wealth", "weapon", "welfare", "whereas", "widespread", "wisdom", "withdraw", "withstand", "witness", "worship", "worthwhile", "worthy", "wreck", "yield", "youngster", "zone"],
+  "英语六级词汇": ["abbreviation", "abide", "abnormal", "abolish", "abort", "abound", "abrupt", "absurd", "abundance", "abuse", "accelerate", "accessory", "acclaim", "accommodate", "accompany", "accomplice", "accomplish", "accountable", "accumulate", "acquaint", "acquit", "activate", "acute", "addict", "adequate", "adhere", "adjacent", "administer", "adolescent", "adore", "adverse", "advocate", "aerial", "aesthetic", "affection", "affiliate", "affirm", "afflict", "aggravate", "aggregate", "agitate", "agony", "agreeable", "alien", "alienate", "align", "allege", "alleviate", "allocate", "alloy", "alter", "alternate", "amateur", "ambiguous", "ambitious", "amend", "amid", "ample", "analogy", "angel", "anniversary", "anonymous", "antenna", "antibiotic", "appalling", "apparatus", "applaud", "appraisal", "appreciable", "apprehend", "apprentice", "appropriate", "apt", "arch", "arena", "armor", "array", "arrogant", "artery", "articulate", "artillery", "ascend", "ascertain", "aspiration", "assassination", "assault", "assert", "assess", "assimilate", "assurance", "astronomy", "atlas", "attachment", "attendance", "attendant", "auction", "authentic", "authoritative", "authorize", "automation", "autonomy", "avail", "avert", "aviation", "awe", "axis", "bachelor", "badge", "baffle", "bald", "ballet", "ballot", "bamboo", "bandage", "bankrupt", "banquet", "barren", "basement", "batch", "bearing", "beforehand", "belly", "betray", "bewilder", "bias", "bibliography", "bilateral", "biography", "bizarre", "blaze", "bleak", "bless", "blink", "blossom", "blunder", "blunt", "blur", "bonus", "booth", "boycott", "brace", "bracket", "breach", "breakdown", "brew", "bribe", "briefcase", "brink", "brisk", "bronze", "brood", "browse", "bruise", "brutal", "buck", "bud", "bug", "bulletin", "bully", "bureaucracy", "burial", "bust", "buzz", "bypass", "cafeteria", "calcium", "calorie", "cane", "cannon", "canvas", "cape", "capsule", "caption", "captive", "cardinal", "carve", "casualty", "catalyst", "catastrophe", "cater", "cathedral", "caution", "cavity", "cellar", "cemetery", "census", "ceramic", "cereal", "certify", "chamber", "chant", "chapel", "cherish", "cholesterol", "chord", "chorus", "chronic", "chunk", "circulation", "circus", "clamp", "clan", "clarity", "clasp", "cling", "clip", "clockwise", "clone", "cluster", "clutch", "coalition", "cocaine", "cognitive", "coherent", "coincide", "collaboration", "collide", "colonial", "comet", "commemorate", "commence", "commend", "commentary", "commitment", "commodity", "commonplace", "communal", "commute", "compact", "comparable", "compartment", "compassion", "compatible", "compel", "compensate", "competence", "compile", "complement", "complexion", "complication", "comply", "composite", "compulsory", "concede", "conceive", "conception", "concise", "condolence", "confer", "confidential", "configuration", "conform", "confront", "conscientious", "consecutive", "consensus", "consequent", "conserve", "console", "consolidate", "conspicuous", "constituent", "constitution", "constrain", "constraint", "consul", "consultancy", "contaminate", "contemplate", "contempt", "contend", "contention", "continuity", "contradict", "contrive", "controversy", "convene", "converge", "conversion", "cooperative", "cordial", "cork", "corporate", "corps", "correlate", "corrode", "corrupt", "cosmetic", "cosy", "couch", "counterpart", "courtesy", "coverage", "coward", "cozy", "cradle", "craft", "crane", "credible", "cripple", "crisp", "criterion", "crumble", "cucumber", "culminate", "cumulative", "curb", "currency", "curriculum", "customary", "cylinder", "cynical", "dart", "database", "dazzle", "deadly", "dean", "decree", "dedicate", "deduce", "deduct", "deem", "default", "defendant", "defiance", "deficiency", "deficit", "defy", "degenerate", "degrade", "delegate", "deliberate", "delusion", "democratic", "denial", "denote", "denounce", "dentist", "depict", "deplete", "deploy", "deport", "depot", "depreciate", "depression", "deprive", "deputy", "derail", "deregulation", "designate", "desirable", "despise", "destined", "destiny", "destructive", "detach", "detain", "detention", "deteriorate", "deterrent", "devastate", "deviate", "devise", "diagnosis", "dictate", "differentiate", "diffuse", "dignity", "dilemma", "diligent", "dilute", "diminish", "dine", "dioxide", "diploma", "directory", "disability", "disable", "disastrous", "discern", "disclose", "discourse", "discreet", "discrepancy", "discrete", "discriminate", "disdain", "dismay", "dispatch", "disperse", "displace", "disposition", "disregard", "disrupt", "dissipate", "distil", "distort", "distract", "disturbance", "diversion", "divert", "dividend", "divine", "dock", "doctrine", "dodge", "dole", "domain", "dome", "donate", "doom", "doubtless", "drainage", "drastic", "drawback", "dread", "dreadful", "drought", "dual", "dub", "dubious", "duplicate", "dwell", "dwelling", "ease", "easter", "eccentric", "eclipse", "ecology", "edible", "ego", "eject", "elapse", "elastic", "elbow", "elect", "eligible", "elite", "eloquent", "elusive", "embark", "embassy", "embed", "embody", "emigrate", "eminent", "emit", "empirical", "enclosure", "endeavor", "endow", "endurance", "energetic", "engagement", "enhance", "enlighten", "enrich", "enrol", "ensemble", "ensue", "entail", "enterprise", "enthusiastic", "entity", "entrepreneur", "envisage", "epoch", "equator", "erase", "erosion", "erroneous", "erupt", "escort", "essence", "esteem", "esthetic", "eternal", "Ethnic", "evacuate", "evaporate", "evoke", "exceedingly", "exceptional", "excerpt", "execution", "exemplify", "exempt", "exile", "exotic", "expedition", "expel", "expertise", "expire", "explicit", "exposition", "exquisite", "extinct", "extinguish", "extract", "extravagant", "fabricate", "fabulous", "facet", "facilitate", "fake", "fascinate", "feast", "feat", "feeble", "fellowship", "feminist", "ferocious", "feudal", "finite", "fitting", "fixture", "flank", "flap", "flare", "flatter", "flaw", "fling", "flip", "flush", "flutter", "foam", "foil", "foremost", "forerunner", "foresee", "formidable", "formulate", "fort", "forthcoming", "forum", "fossil", "foster", "foul", "fracture", "fragile", "fragrance", "frantic", "fraud", "friction", "fringe", "furious", "fury", "fuse", "fusion", "fuss", "galaxy", "gamble", "gasp", "gauge", "generalize", "genetic", "gigantic", "glamour", "gland", "glare", "gleam", "glide", "glitter", "gloom", "gorgeous", "gossip", "gracious", "graphic", "graze", "grease", "grieve", "grill", "grim", "grin", "groan", "groove", "grope", "guardian", "guerrilla", "guideline", "gut", "habitat", "hail", "hamper", "handbook", "handicap", "harassment", "hardy", "haul", "haunt", "heal", "heap", "heave", "heighten", "heir", "helmet", "hemisphere", "henceforth", "herb", "heritage", "hierarchy", "hike", "hinder", "hinge", "historian", "hitherto", "hoist", "homogeneous", "hop", "hose", "hospitality", "hostage", "hound", "hover", "huddle", "hum", "humanitarian", "humidity", "hurl", "hurricane", "hybrid", "hygiene", "hypothesis", "hysterical", "identification", "ideology", "idiom", "idiot", "ignite", "illuminate", "illusion", "imaginative", "imitation", "immerse", "immune", "impair", "impart", "imperative", "imperial", "impetus", "implement", "implicit", "impulse", "inaugurate", "incentive", "incidence", "incidentally", "inclusive", "incorporate", "incur", "indefinite", "indicative", "indict", "indignant", "indignation", "induce", "indulge", "inertia", "infectious", "inflict", "ingenious", "inhabit", "inherent", "inhibit", "initiate", "inject", "inland", "inlet", "innovation", "innumerable", "insane", "insight", "inspiration", "installment", "instantaneous", "instrumental", "insulate", "intact", "integral", "integrity", "intellect", "intelligible", "intensify", "interact", "intercourse", "interim", "intermittent", "intersection", "intervene", "intricate", "intrigue", "intrinsic", "intuition", "invalid", "invaluable", "invariably", "inventory", "invert", "irony", "irrespective", "irrigation", "irritate", "isle", "ivory", "jeopardize", "jerk", "jog", "judicial", "junction", "jury", "justification", "juvenile", "kidnap", "kidney", "kit", "knit", "knob", "lace", "lame", "lash", "latent", "latitude", "layman", "leaflet", "legend", "legislation", "legitimate", "lever", "levy", "liability", "lick", "lieutenant", "likelihood", "limp", "linear", "linen", "liner", "linger", "literacy", "literal", "litter", "lobby", "locality", "locomotive", "lofty", "longitude", "loom", "lounge", "lubricate", "luminous", "lump", "lunar", "lure", "magistrate", "magnify", "magnitude", "majesty", "mall", "maneuver", "manifest", "manipulate", "mansion", "manuscript", "marathon", "marble", "marginal", "marsh", "marshal", "masculine", "massacre", "masterpiece", "meadow", "mechanism", "medieval", "melody", "memorandum", "menace", "mercury", "merge", "merit", "metaphor", "methodology", "metropolitan", "midst", "migrant", "militant", "millionaire", "mingle", "miniature", "minimal", "minimize", "mint", "misery", "misfortune", "missionary", "mistress", "moan", "mob", "mobilize", "mock", "module", "momentum", "monetary", "monopoly", "monster", "morality", "mortal", "mortgage", "motel", "mourn", "muddy", "multinational", "multitude", "municipal", "mutter", "naive", "napkin", "narrative", "nasty", "necessitate", "neglect", "negligible", "negotiate", "nickel", "nickname", "nil", "nominal", "nominate", "nonetheless", "notable", "notorious", "notwithstanding", "nourish", "novelty", "numerical", "nurture", "nutrition", "oak", "oath", "obedient", "obscene", "obscure", "odo", "offset", "offspring", "olive", "opaque", "oppress", "opt", "optimism", "optimum", "orchard", "organ", "orient", "originate", "ornament", "orthodox", "ounce", "outbreak", "outfit", "outrage", "overflow", "overhear", "overlap", "overt", "overthrow", "overturn", "overwhelm", "owl", "oxide", "ozone", "pact", "pamphlet", "panic", "paperback", "paradise", "paradox", "parameter", "parasite", "parlor", "participant", "partition", "pastime", "pasture", "patent", "pathetic", "patriot", "patrol", "patron", "pave", "pedal", "pedestrian", "peel", "peg", "pendulum", "penguin", "peninsula", "perfection", "perfume", "periodic", "perish", "permeate", "permissible", "perpetual", "perplex", "persecute", "persistent", "personnel", "persuasion", "pest", "petition", "petty", "physiological", "pilgrim", "pirate", "pitch", "plague", "plaster", "plateau", "plausible", "plea", "plead", "pledge", "plight", "poke", "polar", "poll", "ponder", "pope", "porch", "pore", "portray", "posture", "practicable", "preach", "precede", "precedent", "preclude", "predatory", "predecessor", "predominant", "pregnant", "premature", "premise", "premium", "prescription", "presentation", "preside", "prestige", "presume", "pretext", "prevail", "prevalent", "preview", "prey", "privacy", "probability", "probe", "proceeding", "proclaim", "productive", "productivity", "proficiency", "profitable", "profound", "prolong", "promising", "prone", "propaganda", "propel", "prophet", "proposition", "prose", "prosecute", "prospective", "prototype", "provocative", "provoke", "proximity", "prune", "psychiatrist", "pudding", "puddle", "pumpkin", "purify", "pursuit", "qualitative", "quantify", "quantitative", "quarterly", "quartz", "queer", "quench", "quest", "questionnaire", "quiver", "quota", "racket", "radiant", "radiate", "radius", "random", "rap", "rape", "rash", "rating", "readily", "realistic", "reap", "reassure", "rebellion", "recede", "recipient", "reciprocal", "recite", "reckless", "reckon", "reclaim", "reconcile", "rectangular", "rectify", "recur", "recycle", "redundant", "referee", "refrain", "refreshment", "refugee", "refund", "refute", "regime", "regiment", "rehearsal", "reign", "rein", "rejoice", "relay", "reliance", "relish", "remainder", "remnant", "renaissance", "repay", "repel", "repertoire", "repression", "reproach", "resemblance", "resent", "reside", "residential", "resign", "resonance", "respectable", "respectful", "resultant", "retention", "retort", "retrieve", "retrospect", "reunion", "revelation", "revenge", "revive", "revolve", "rigorous", "rim", "riot", "rip", "ripple", "ritual", "robust", "romance", "rot", "royalty", "rupture", "sacred", "safeguard", "salute", "salvage", "sanction", "saturate", "sauce", "savage", "scan", "scandal", "scar", "scent", "sceptical", "scramble", "scrap", "scrub", "scrutiny", "sculpture", "seam", "sector", "seemingly", "segment", "segregate", "senator", "sensation", "sentiment", "sergeant", "serial", "setback", "shabby", "shaft", "shatter", "shepherd", "shipment", "shove", "shrewd", "shrub", "shrug", "shutter", "shuttle", "siege", "signify", "silicon", "simulate", "simultaneous", "sip", "situated", "skeleton", "skip", "skull", "slack", "slash", "slaughter", "slick", "slogan", "slot", "slum", "slump", "smuggle", "snack", "snap", "snatch", "sneak", "sniff", "sober", "sociology", "solicitor", "solidarity", "solitary", "solo", "soluble", "sovereign", "spacious", "sparkle", "speciality", "specification", "spectacle", "spectator", "spectrum", "speculate", "spice", "spine", "spiral", "splash", "spokesman", "sponge", "spontaneous", "sprinkle", "spy", "squad", "stab", "stability", "stabilize", "stagger", "staircase", "stalk", "stall", "staple", "startle", "statesman", "stationary", "stereo", "stereotype", "stern", "stimulus", "stitch", "stock", "stoop", "straightforward", "strand", "strategic", "stray", "streak", "streamline", "stride", "striking", "strive", "stroke", "stroll", "stubborn", "stumble", "stump", "stun", "sturdy", "subjective", "submarine", "subordinate", "subscribe", "subscription", "subsequent", "subsidy", "subsistence", "substantive", "subtle", "successor", "sue", "suffice", "suite", "sulfur", "summit", "summon", "superb", "superintendent", "supersonic", "superstition", "supervise", "supplementary", "suppress", "surge", "surgeon", "surpass", "surplus", "surrender", "susceptible", "suspension", "suspicious", "swamp", "swap", "symmetry", "symphony", "symposium", "syndrome", "synthesis", "tablet", "tack", "tan", "tangle", "tanker", "tariff", "tease", "tedious", "telecommunication", "temperament", "tempo", "tempt", "tenant", "tentative", "terminate", "terrace", "terrain", "terrific", "testify", "testimony", "texture", "thanksgiving", "theft", "thereafter", "thermal", "thesis", "thigh", "thorn", "threshold", "thrill", "throne", "thrust", "tick", "tile", "tilt", "timber", "timely", "timid", "token", "tolerant", "toll", "toss", "tow", "toxic", "tract", "trademark", "tragic", "trait", "transaction", "transcend", "transient", "transistor", "transit", "transition", "transplant", "traverse", "trench", "tribe", "tribute", "trifle", "trigger", "triple", "trivial", "tub", "tuck", "tug", "tuition", "tumble", "turbulent", "turnover", "tutor", "ultraviolet", "unanimous", "underestimate", "underlying", "undermine", "unfold", "unify", "unprecedented", "upgrade", "uphold", "uproar", "uranium", "utilize", "utter", "vacuum", "valve", "vanity", "vegetation", "veil", "vein", "vent", "ventilate", "verbal", "verdict", "verge", "versatile", "verse", "versus", "veto", "vicinity", "vicious", "virgin", "virtual", "vocal", "vocational", "void", "volatile", "vow", "vulgar", "vulnerable", "wallet", "ward", "wardrobe", "warehouse", "warfare", "warrant", "watertight", "watt", "weary", "web", "wedge", "weird", "whale", "whereby", "whirl", "wholesale", "wink", "witch", "withdraw", "withhold", "workforce", "workplace", "worship", "wreath", "wreckage", "wrench", "wretched", "yacht", "yell", "yield", "zinc"],
 };
 
 export function getVocabLists(): { name: string; count: number }[] {
@@ -125,4 +272,924 @@ export function getVocabLists(): { name: string; count: number }[] {
 
 export function getVocabList(name: string): string[] {
   return vocabLists[name] || [];
+}
+
+// Common English phrases — maps lowercase phrase to Chinese translation
+const commonPhrases: Record<string, string> = {
+  "a lot": "许多、大量",
+  "a lot of": "许多、大量",
+  "a few": "一些、几个",
+  "a little": "一点、少量",
+  "a couple of": "几个、一对",
+  "a number of": "许多、若干",
+  "a great deal": "大量、很多",
+  "a variety of": "各种各样的",
+  "according to": "根据、按照",
+  "account for": "解释、说明（原因）；占（比例）",
+  "act as": "充当、担任",
+  "add up": "加起来；有意义",
+  "add up to": "总计达；意味着",
+  "after all": "毕竟、终究",
+  "agree with": "同意；与…一致",
+  "ahead of": "在…前面、领先于",
+  "aim at": "瞄准；旨在、目的是",
+  "all along": "一直、始终",
+  "all but": "几乎、差不多",
+  "all of a sudden": "突然",
+  "all over": "遍及、到处",
+  "all right": "好的、没问题",
+  "allow for": "考虑到、顾及",
+  "along with": "连同、随同",
+  "amount to": "总计达；等同于",
+  "and so on": "等等",
+  "apart from": "除…之外",
+  "appeal to": "吸引；呼吁；上诉",
+  "apply for": "申请",
+  "apply to": "适用于；应用于",
+  "as a matter of fact": "事实上",
+  "as a result": "结果、因此",
+  "as a whole": "整体来看、总体上",
+  "as far as": "就…而言；远至",
+  "as for": "至于、关于",
+  "as if": "好像、仿佛",
+  "as long as": "只要",
+  "as soon as": "一…就…",
+  "as though": "好像、仿佛",
+  "as to": "关于、至于",
+  "as usual": "像往常一样",
+  "as well": "也、还",
+  "as well as": "以及、和…一样",
+  "ask for": "请求、要求",
+  "at all": "根本、完全（用于否定）",
+  "at first": "起初、最初",
+  "at hand": "在手边；即将到来",
+  "at last": "终于",
+  "at least": "至少",
+  "at most": "至多、最多",
+  "at once": "立刻、马上",
+  "at present": "目前、现在",
+  "at risk": "处于危险中",
+  "at stake": "危如累卵、在危急关头",
+  "at the expense of": "以…为代价",
+  "at the mercy of": "任凭…的摆布",
+  "at the moment": "此刻、目前",
+  "at the same time": "同时",
+  "at times": "有时、偶尔",
+  "attach to": "依附于；附带",
+  "back and forth": "来回地、反复地",
+  "back down": "放弃、让步",
+  "back off": "退缩、退后",
+  "back up": "支持、备份；倒车",
+  "base on": "基于、以…为依据",
+  "be able to": "能够",
+  "be about to": "即将、正要",
+  "be bound to": "必定、一定",
+  "be capable of": "有能力做",
+  "be concerned about": "关心、担忧",
+  "be fond of": "喜欢",
+  "be interested in": "对…感兴趣",
+  "be likely to": "很可能",
+  "be made of": "由…制成",
+  "be proud of": "以…为荣",
+  "be supposed to": "应该、理应",
+  "be used to": "习惯于",
+  "bear in mind": "记住、牢记",
+  "because of": "因为、由于",
+  "become of": "遭遇、发生（在…身上）",
+  "before long": "不久以后",
+  "begin with": "以…开始",
+  "believe in": "相信、信仰",
+  "belong to": "属于",
+  "benefit from": "从…中获益",
+  "blow up": "爆炸；发脾气；充气",
+  "boil down to": "归结为",
+  "break away": "脱离、逃脱",
+  "break down": "出故障；分解；崩溃",
+  "break in": "闯入；打断；驯服",
+  "break into": "闯入、破门而入",
+  "break off": "中断、折断；绝交",
+  "break out": "爆发、突然发生",
+  "break through": "突破、冲破",
+  "break up": "分手、解散；破碎",
+  "bring about": "引起、导致",
+  "bring back": "带回；使回忆起；恢复",
+  "bring down": "降低、打倒；使垮台",
+  "bring forward": "提出；提前",
+  "bring in": "引入、引进；赚得",
+  "bring out": "使显现；出版、推出",
+  "bring up": "抚养、养育；提出（话题）",
+  "build up": "建立、增强；积累",
+  "burn out": "耗尽、精疲力竭；烧毁",
+  "burst into": "突然（哭、笑等）起来",
+  "by accident": "偶然、意外地",
+  "by all means": "当然可以、务必",
+  "by chance": "偶然、碰巧",
+  "by far": "远为、大大地",
+  "by hand": "手工的",
+  "by heart": "熟记、背诵",
+  "by means of": "通过、借助",
+  "by mistake": "错误地、无意地",
+  "by nature": "天性、本质上",
+  "by no means": "绝不、一点也不",
+  "by the time": "到…的时候",
+  "by the way": "顺便说一下",
+  "call for": "要求、需要；去接（某人）",
+  "call in": "召来；叫…进来",
+  "call off": "取消",
+  "call on": "拜访；号召",
+  "call out": "大声喊叫；召集",
+  "call up": "打电话；征召入伍；唤起回忆",
+  "calm down": "冷静下来、平静下来",
+  "care about": "关心、在意",
+  "care for": "照顾；喜欢",
+  "carry on": "继续、进行",
+  "carry out": "执行、实施",
+  "carry through": "完成；帮助渡过难关",
+  "cast light on": "阐明、使…清楚",
+  "catch on": "流行起来；理解",
+  "catch up": "赶上、追上",
+  "catch up with": "赶上、追上",
+  "check in": "办理入住；报到",
+  "check out": "退房；结账离开；查看",
+  "check up": "检查、核对",
+  "cheer up": "振作起来、高兴起来",
+  "clear up": "清理；放晴；澄清",
+  "close down": "关闭、停业",
+  "come about": "发生、产生",
+  "come across": "偶然遇见；给人…印象",
+  "come along": "一起来；进展",
+  "come around": "苏醒；改变看法；顺便来访",
+  "come back": "回来；重新流行；回想起",
+  "come by": "得到、获得；顺便拜访",
+  "come down": "下降；落下；流传",
+  "come down with": "染上（病）",
+  "come forward": "站出来、自告奋勇",
+  "come from": "来自、出身于",
+  "come in": "进来；流行起来；到达",
+  "come into": "继承；进入",
+  "come off": "脱落；举行；成功",
+  "come on": "来吧；加油；进展",
+  "come out": "出来；出版；结果是",
+  "come over": "过来、顺便来访",
+  "come through": "经历…而幸存；成功完成",
+  "come to": "苏醒；总计达；达成",
+  "come true": "实现、成真",
+  "come up": "走近；发生；被提出",
+  "come up with": "想出、提出",
+  "compare to": "把…比作；与…相比",
+  "compare with": "与…比较",
+  "compete with": "与…竞争",
+  "consist of": "由…组成",
+  "contribute to": "贡献于；有助于；导致",
+  "cope with": "应对、处理",
+  "count on": "依靠、指望",
+  "count up": "总计、加起来",
+  "cover up": "掩盖、掩饰",
+  "cross out": "划掉、删去",
+  "cut back": "削减、缩减",
+  "cut down": "削减；砍倒",
+  "cut in": "插嘴；超车插队",
+  "cut off": "切断、中断；隔离",
+  "cut out": "剪下；删除；停止",
+  "deal with": "处理、应对；涉及",
+  "decide on": "决定、选定",
+  "depend on": "依赖、取决于",
+  "devote to": "致力于、奉献于",
+  "die down": "逐渐平息、减弱",
+  "die of": "死于（疾病、饥饿等内部原因）",
+  "die out": "灭绝、消亡",
+  "differ from": "与…不同",
+  "dig into": "探究、钻研；开始吃",
+  "dig up": "挖掘出、找出",
+  "dispose of": "处理、处置",
+  "do away with": "废除、去掉",
+  "do with": "需要；忍受；处理",
+  "do without": "没有…也行、将就",
+  "drag on": "拖延、拖长",
+  "draw attention to": "吸引注意",
+  "draw back": "退缩、收回",
+  "draw in": "吸引；变短（白天）；进站",
+  "draw on": "利用、借鉴；临近",
+  "draw out": "拉长；提取（钱）；引出",
+  "draw up": "起草；停下",
+  "dress up": "穿上盛装、打扮",
+  "drive away": "驱赶、赶走",
+  "drop by": "顺便拜访",
+  "drop in": "顺便走访",
+  "drop off": "减少、下降；打瞌睡；送下车",
+  "drop out": "退学、退出",
+  "dry up": "干涸；枯竭",
+  "dwell on": "老是想着、详述",
+  "end up": "最终成为、以…告终",
+  "engage in": "从事、参与",
+  "even if": "即使、尽管",
+  "even though": "即使、尽管",
+  "ever since": "从那时起一直",
+  "every now and then": "不时地、偶尔",
+  "except for": "除…之外",
+  "expose to": "暴露于；接触",
+  "face up to": "勇敢面对",
+  "fall apart": "破裂、崩溃",
+  "fall back": "后退、撤退",
+  "fall back on": "依靠、求助于",
+  "fall behind": "落后、跟不上",
+  "fall for": "上当受骗；爱上",
+  "fall in love with": "爱上",
+  "fall into": "落入；分为；养成（习惯）",
+  "fall off": "下降、减少；脱落",
+  "fall out": "争吵、闹翻；脱落",
+  "fall through": "落空、失败",
+  "far from": "远远不、完全不",
+  "feel like": "想要；感觉像是",
+  "figure out": "弄清楚、弄明白",
+  "fill in": "填写；临时替代",
+  "fill out": "填写（表格）；变丰满",
+  "fill up": "填满、装满",
+  "find out": "发现、查明",
+  "focus on": "集中注意力于、专注于",
+  "for ever": "永远",
+  "for example": "例如",
+  "for good": "永久地、一劳永逸地",
+  "for instance": "例如",
+  "for sure": "肯定地、毫无疑问",
+  "from now on": "从现在起",
+  "from time to time": "不时地、偶尔",
+  "get across": "使…被理解；通过",
+  "get ahead": "取得进步、领先",
+  "get along": "相处融洽；进展",
+  "get around": "四处走动；规避；流传",
+  "get at": "意指、暗示；够得着",
+  "get away": "逃脱、离开",
+  "get away with": "逃脱惩罚、侥幸成功",
+  "get back": "回来；取回；报复",
+  "get back to": "再联系、回复",
+  "get by": "勉强过活、度日",
+  "get down": "下来；使沮丧；写下",
+  "get down to": "开始认真对待",
+  "get in": "进入、到达；收割",
+  "get into": "进入；陷入；养成（习惯）",
+  "get off": "下车、离开；出发",
+  "get on": "上车；进展；相处",
+  "get on with": "继续做；与…相处",
+  "get out": "出去、离开；泄露",
+  "get out of": "逃避、摆脱",
+  "get over": "克服、从…中恢复",
+  "get rid of": "摆脱、除掉",
+  "get through": "通过；完成；接通电话",
+  "get to": "到达；开始",
+  "get together": "聚会、聚在一起",
+  "get up": "起床；站起来",
+  "give away": "赠送；泄露（秘密）；出卖",
+  "give back": "归还、送回",
+  "give in": "屈服、让步",
+  "give off": "发出、放出（光、热、气味等）",
+  "give out": "分发；耗尽、用光；发出",
+  "give rise to": "引起、导致",
+  "give up": "放弃、认输",
+  "give way": "让路、让步；崩塌",
+  "go about": "着手做、从事；四处走动",
+  "go after": "追求、追逐",
+  "go against": "违背、违反；不利于",
+  "go ahead": "开始、进行；去吧",
+  "go along with": "赞同、附和",
+  "go around": "四处走动；足够分配；流传",
+  "go away": "离开、走开",
+  "go back": "回去；追溯",
+  "go back on": "违背、背弃",
+  "go beyond": "超越、超出",
+  "go by": "经过；（时间）流逝；遵循",
+  "go down": "下降；沉没；（价格）下跌",
+  "go for": "选择；喜欢；攻击",
+  "go in for": "参加；爱好、沉迷于",
+  "go into": "进入；详细讨论；从事",
+  "go off": "爆炸；发出响声；变质",
+  "go on": "继续；发生；进行",
+  "go out": "外出；熄灭；过时",
+  "go over": "复习、仔细检查",
+  "go through": "经历、经受；仔细检查；通过",
+  "go up": "上升、上涨",
+  "go with": "伴随；与…相配",
+  "go without": "没有…也行",
+  "grow up": "长大、成长",
+  "hand down": "传下来、传给后代",
+  "hand in": "上交、提交",
+  "hand out": "分发；施舍",
+  "hand over": "移交、交出",
+  "hang around": "闲逛、徘徊",
+  "hang on": "等一下；坚持；取决于",
+  "hang out": "闲逛、常去某处",
+  "hang up": "挂断电话",
+  "happen to": "碰巧、发生于",
+  "have access to": "可以使用、有机会接触",
+  "have an effect on": "对…有影响",
+  "have nothing to do with": "与…无关",
+  "have to": "不得不、必须",
+  "have to do with": "与…有关",
+  "head for": "前往、朝…方向去",
+  "hear about": "听说、得知",
+  "hear from": "收到…的来信（或消息）",
+  "hear of": "听说、得知",
+  "help out": "帮助…摆脱困境",
+  "hold back": "阻止、抑制；隐瞒",
+  "hold on": "等一下；坚持住；别挂电话",
+  "hold onto": "紧紧抓住；保留",
+  "hold out": "伸出；坚持；维持",
+  "hold up": "举起；耽搁；支撑",
+  "hurry up": "快点、赶快",
+  "in a hurry": "匆忙地",
+  "in a sense": "在某种意义上",
+  "in a word": "总之、一句话",
+  "in accordance with": "按照、根据",
+  "in addition": "此外、另外",
+  "in addition to": "除…之外",
+  "in advance": "提前、预先",
+  "in all": "总共、总计",
+  "in behalf of": "代表、为了…的利益",
+  "in brief": "简而言之",
+  "in case": "以防、万一",
+  "in case of": "万一、如果发生",
+  "in charge of": "负责、掌管",
+  "in common": "共同的、共有的",
+  "in comparison with": "与…相比",
+  "in conclusion": "总之、最后",
+  "in consequence": "因此、结果",
+  "in contrast to": "与…形成对比",
+  "in danger": "处于危险中",
+  "in debt": "负债、欠债",
+  "in detail": "详细地",
+  "in disguise": "伪装的、乔装的",
+  "in doubt": "不确定的、有疑问的",
+  "in effect": "实际上、生效",
+  "in essence": "本质上",
+  "in excess of": "超过",
+  "in exchange for": "作为…的交换",
+  "in fact": "事实上、实际上",
+  "in favor of": "支持、赞成；有利于",
+  "in front of": "在…前面",
+  "in general": "一般来说、通常",
+  "in hand": "在手上；在处理中",
+  "in honor of": "为向…表示敬意",
+  "in line with": "与…一致、符合",
+  "in memory of": "纪念",
+  "in need of": "需要",
+  "in no time": "立刻、马上",
+  "in order": "按顺序；秩序井然",
+  "in order to": "为了、以便",
+  "in other words": "换句话说",
+  "in particular": "特别、尤其",
+  "in person": "亲自",
+  "in place": "在合适的位置；到位的",
+  "in place of": "代替",
+  "in practice": "在实践中；实际上",
+  "in public": "公开地",
+  "in pursuit of": "追求、追寻",
+  "in question": "讨论中的、有疑问的",
+  "in regard to": "关于、至于",
+  "in relation to": "关于、涉及",
+  "in response to": "响应、回应",
+  "in return": "作为回报",
+  "in search of": "寻找、搜寻",
+  "in season": "当季的、应时的",
+  "in secret": "秘密地",
+  "in short": "简而言之",
+  "in sight": "在视野内、看得见",
+  "in spite of": "尽管、不管",
+  "in stock": "有存货",
+  "in support of": "支持",
+  "in terms of": "就…而言、在…方面",
+  "in that": "因为、在于",
+  "in the course of": "在…过程中",
+  "in the distance": "在远处",
+  "in the end": "最后、终于",
+  "in the event of": "万一、如果发生",
+  "in the face of": "面对、不顾",
+  "in the first place": "首先、第一",
+  "in the future": "将来",
+  "in the light of": "根据、考虑到",
+  "in the long run": "从长远来看",
+  "in the meantime": "与此同时",
+  "in the name of": "以…的名义",
+  "in the way": "挡道、妨碍",
+  "in theory": "理论上",
+  "in time": "及时；最终",
+  "in trouble": "处于困境中",
+  "in turn": "依次、轮流；反过来",
+  "in vain": "徒劳地、白白地",
+  "in view of": "鉴于、考虑到",
+  "insist on": "坚持、坚决要求",
+  "instead of": "而不是、代替",
+  "interfere with": "干扰、妨碍",
+  "involve in": "卷入、涉及",
+  "join in": "参加、加入",
+  "jump to conclusions": "仓促下结论",
+  "just about": "几乎、差不多",
+  "just as": "正如；正当…时",
+  "keep an eye on": "照看、留意",
+  "keep back": "阻止、抑制；隐瞒",
+  "keep down": "压制、控制；使不增长",
+  "keep from": "阻止；忍住不",
+  "keep in mind": "记住、牢记",
+  "keep in touch": "保持联系",
+  "keep off": "不接近、避开",
+  "keep on": "继续、坚持",
+  "keep out": "不让…进入、阻止",
+  "keep to": "遵守、坚持",
+  "keep track of": "记录、了解…的动态",
+  "keep up": "保持、维持",
+  "keep up with": "跟上、不落后于",
+  "knock down": "撞倒；拆除",
+  "knock off": "停止（工作）；下班",
+  "knock out": "击倒；使失去知觉；淘汰",
+  "know of": "知道、了解",
+  "lack of": "缺乏、缺少",
+  "laugh at": "嘲笑、取笑",
+  "lay aside": "放下；留存",
+  "lay down": "制定（规则）；放下",
+  "lay off": "解雇；停止",
+  "lay out": "布置、设计；花费",
+  "lead to": "导致、引起",
+  "lean on": "依靠、依赖",
+  "learn from": "从…中学习",
+  "leave alone": "不打扰、不干涉",
+  "leave behind": "留下、遗忘；超过",
+  "leave for": "动身去、前往",
+  "leave out": "遗漏、省略；排除",
+  "let alone": "更不用说；不打扰",
+  "let down": "使失望；放下",
+  "let go": "放手、放开；解雇",
+  "let in": "让…进入",
+  "let off": "释放；免除惩罚；放（烟火等）",
+  "let out": "释放；泄露；发出（声音）",
+  "lie in": "在于；睡懒觉",
+  "limit to": "限于、限制",
+  "line up": "排队、排成一行",
+  "listen to": "听、倾听",
+  "live by": "以…为生；遵守",
+  "live on": "以…为生；继续活着",
+  "live through": "经历…而幸存",
+  "live up to": "不辜负、符合（期望）",
+  "live with": "忍受、容忍；与…同住",
+  "long for": "渴望、向往",
+  "look after": "照顾、照看",
+  "look ahead": "向前看、展望未来",
+  "look around": "环顾四周、四处看看",
+  "look at": "看、注视；考虑",
+  "look back": "回顾、回想",
+  "look down on": "看不起、轻视",
+  "look for": "寻找",
+  "look forward to": "期待、盼望",
+  "look in": "顺便拜访",
+  "look into": "调查、研究",
+  "look like": "看起来像",
+  "look on": "旁观、观看",
+  "look out": "当心、注意",
+  "look out for": "留心、提防",
+  "look over": "审阅、检查",
+  "look through": "浏览、翻阅；看穿",
+  "look to": "指望、依赖；朝向",
+  "look up": "查阅、查找；仰视",
+  "look up to": "尊敬、敬仰",
+  "lose heart": "灰心、失去信心",
+  "lose track of": "失去…的线索、忘记",
+  "made up of": "由…组成",
+  "major in": "主修、专攻",
+  "make a decision": "做决定",
+  "make a difference": "有影响、起重要作用",
+  "make a living": "谋生",
+  "make a mistake": "犯错误",
+  "make an effort": "努力",
+  "make clear": "澄清、说明",
+  "make for": "走向；有助于、促成",
+  "make friends": "交朋友",
+  "make fun of": "取笑、拿…开玩笑",
+  "make out": "辨认出；理解；假装",
+  "make progress": "取得进步",
+  "make room for": "为…腾出空间",
+  "make sense": "有意义、讲得通",
+  "make sure": "确保、务必",
+  "make the best of": "充分利用",
+  "make the most of": "充分利用",
+  "make up": "组成、构成；编造；化妆；和好",
+  "make up for": "弥补、补偿",
+  "make use of": "利用",
+  "make way": "让路、腾出地方",
+  "many a": "许多的",
+  "mark down": "记下；降价",
+  "matter of fact": "事实上",
+  "meet with": "遭遇、经历；会见",
+  "mistake for": "误认为、把…错当成",
+  "mix up": "弄混、混淆",
+  "more and more": "越来越多",
+  "more or less": "或多或少、差不多",
+  "move in": "搬进来",
+  "move on": "继续前进、向前看",
+  "move out": "搬出去",
+  "move up": "晋升；向前移动",
+  "name after": "以…命名",
+  "neither nor": "既不…也不",
+  "never mind": "没关系、别担心",
+  "next to": "紧挨着；仅次于；几乎",
+  "no doubt": "毫无疑问",
+  "no longer": "不再",
+  "no matter": "无论、不管",
+  "no more than": "仅仅、不超过",
+  "no sooner than": "一…就…",
+  "no wonder": "难怪、怪不得",
+  "none other than": "正是、不是别的而是",
+  "not at all": "一点也不；别客气",
+  "not only but also": "不仅…而且",
+  "not to mention": "更不用说",
+  "nothing but": "只不过、只有",
+  "now and then": "偶尔、不时地",
+  "now that": "既然、由于",
+  "object to": "反对",
+  "occur to": "想到、想起",
+  "of course": "当然",
+  "off and on": "断断续续地",
+  "on account of": "由于、因为",
+  "on and off": "断断续续地",
+  "on average": "平均",
+  "on behalf of": "代表",
+  "on board": "在船上（飞机上、火车上）",
+  "on business": "出差",
+  "on condition that": "条件是、如果",
+  "on demand": "一经要求、按需",
+  "on display": "展出、陈列",
+  "on duty": "值班、值勤",
+  "on earth": "究竟、到底",
+  "on end": "连续地；竖着",
+  "on fire": "起火、着火",
+  "on foot": "步行",
+  "on hand": "在手边、现有的",
+  "on occasion": "偶尔、有时",
+  "on one's mind": "挂在心上、惦念",
+  "on one's own": "独自、独立地",
+  "on purpose": "故意地",
+  "on sale": "出售；打折",
+  "on schedule": "按计划、准时",
+  "on second thoughts": "经重新考虑",
+  "on the basis of": "在…基础上",
+  "on the contrary": "正相反",
+  "on the edge of": "在…边缘、濒临",
+  "on the grounds of": "以…为由",
+  "on the increase": "在增加",
+  "on the one hand": "一方面",
+  "on the other hand": "另一方面",
+  "on the point of": "正要…的时候",
+  "on the spot": "当场、在现场",
+  "on the whole": "总体上、大体上",
+  "on time": "准时",
+  "once again": "再一次",
+  "once in a while": "偶尔、间或",
+  "once more": "再一次",
+  "once upon a time": "从前、很久以前",
+  "one after another": "一个接一个地",
+  "open up": "打开；开放；畅所欲言",
+  "oppose to": "反对",
+  "or else": "否则、要不然",
+  "or rather": "更确切地说",
+  "or so": "大约、左右",
+  "other than": "除了；不同于",
+  "out of": "从…出来；由于；缺乏",
+  "out of breath": "上气不接下气",
+  "out of control": "失控",
+  "out of date": "过时的",
+  "out of order": "出故障、次序颠倒",
+  "out of place": "不合适的、格格不入的",
+  "out of the question": "不可能的",
+  "out of work": "失业",
+  "over and over": "反复地、一再地",
+  "owe to": "归功于；欠",
+  "owing to": "由于、因为",
+  "pass away": "去世、逝世",
+  "pass by": "经过、路过",
+  "pass down": "传下来、流传",
+  "pass on": "传递、传给；去世",
+  "pass out": "昏倒、失去知觉",
+  "pass through": "经过、通过",
+  "pay attention to": "注意、留意",
+  "pay back": "偿还；报复",
+  "pay for": "支付；为…付出代价",
+  "pay off": "还清（债务）；得到好结果",
+  "pay up": "付清、全部付清",
+  "persist in": "坚持、固执于",
+  "pick out": "挑选、辨认出",
+  "pick up": "捡起；接（人）；学会；好转",
+  "pile up": "堆积、积累",
+  "play a part in": "在…中起作用",
+  "play with": "玩弄、玩耍；不认真对待",
+  "plenty of": "大量的、充足的",
+  "point at": "指向、指着",
+  "point of view": "观点、视角",
+  "point out": "指出、指明",
+  "prefer to": "更喜欢、宁愿",
+  "prepare for": "为…做准备",
+  "prevent from": "阻止、防止",
+  "prior to": "在…之前",
+  "protect from": "保护…免受",
+  "proud of": "以…为荣",
+  "provide for": "供养、为…做准备",
+  "provide with": "提供、供给",
+  "pull apart": "拉开、拆开；批评",
+  "pull down": "拆除、拉倒",
+  "pull in": "进站、停车；吸引",
+  "pull off": "成功完成；脱下；停车",
+  "pull out": "拔出、取出；退出、撤离",
+  "pull over": "靠边停车",
+  "pull through": "渡过难关、康复",
+  "pull up": "停下、停车；拔起",
+  "push for": "强烈要求、争取",
+  "push forward": "推进、推进",
+  "put aside": "放到一边；储存（钱）",
+  "put away": "收起来、放好；存（钱）",
+  "put down": "放下；镇压；写下",
+  "put forward": "提出、提议",
+  "put off": "推迟、拖延",
+  "put on": "穿上；上演；增加（体重）",
+  "put out": "熄灭；出版；使不便",
+  "put through": "接通（电话）；使经历",
+  "put up": "张贴；搭建；提高；提供住宿",
+  "put up with": "忍受、容忍",
+  "quite a few": "相当多、不少",
+  "rather than": "而不是",
+  "react to": "对…做出反应",
+  "reckon on": "指望、依赖",
+  "reckon with": "考虑到、处理；对付",
+  "refer to": "提到、参考；指的是",
+  "refer to as": "把…称作",
+  "reflect on": "反思、思考",
+  "regard as": "把…视为",
+  "regardless of": "不管、不顾",
+  "relate to": "与…有关；理解",
+  "rely on": "依赖、依靠",
+  "remind of": "使想起、提醒",
+  "respond to": "回应、对…做出反应",
+  "rest on": "依赖、依靠；基于",
+  "result from": "起因于、由…引起",
+  "result in": "导致、造成",
+  "revolve around": "围绕、以…为中心",
+  "ride out": "安然渡过",
+  "right away": "立刻、马上",
+  "ring back": "回电话",
+  "ring off": "挂断电话",
+  "ring up": "打电话；结账",
+  "rise up": "上升；起义",
+  "roll in": "大量涌来、滚滚而来",
+  "roll out": "推出（新产品）；展开",
+  "round up": "围捕、聚集",
+  "rub out": "擦掉",
+  "rule out": "排除、不予考虑",
+  "run across": "偶然碰见",
+  "run after": "追赶、追求",
+  "run against": "与…竞选；违反",
+  "run away": "逃跑、离家出走",
+  "run down": "撞倒；贬低；耗尽（电池）",
+  "run for": "竞选",
+  "run into": "偶然遇见；遭遇（困难）；撞上",
+  "run off": "逃跑；复印",
+  "run on": "继续；靠…运转",
+  "run out": "用完、耗尽",
+  "run out of": "用完、耗尽",
+  "run over": "碾过；溢出；匆匆复习",
+  "run through": "快速过一遍；贯穿；挥霍",
+  "rush into": "匆忙做、仓促行事",
+  "save up": "储蓄、存钱",
+  "search for": "搜寻、寻找",
+  "see about": "处理、安排",
+  "see off": "送别、给…送行",
+  "see through": "看穿、识破；帮助渡过",
+  "see to": "处理、照料",
+  "seek after": "寻求、追求",
+  "set about": "着手、开始做",
+  "set aside": "留出（时间、钱）；暂不考虑",
+  "set back": "推迟、阻碍；使花费",
+  "set down": "放下；写下、记下",
+  "set forth": "阐述、提出；出发",
+  "set off": "出发、动身；引爆；引起",
+  "set out": "出发；开始、着手",
+  "set up": "建立、设立；安排",
+  "settle down": "安定下来、定居；平静下来",
+  "shake off": "摆脱、甩掉",
+  "show off": "炫耀、卖弄",
+  "show round": "带领…参观",
+  "show up": "出现、露面；使难堪",
+  "shut down": "关闭、停工",
+  "shut off": "关掉、切断",
+  "shut up": "闭嘴、住口",
+  "side by side": "肩并肩地",
+  "sign in": "签到、登录",
+  "sign out": "签退、退出登录",
+  "sign up": "报名、注册",
+  "sit back": "放松、袖手旁观",
+  "sit down": "坐下",
+  "sit up": "坐起来；熬夜",
+  "slow down": "减速、慢下来",
+  "so as to": "为了、以便",
+  "so far": "到目前为止",
+  "so long as": "只要",
+  "so that": "以便、所以",
+  "sort of": "有几分、有点",
+  "sort out": "整理、解决；挑出",
+  "speak for": "代表…讲话",
+  "speak of": "谈到、提及",
+  "speak up": "大声说；发表意见",
+  "speed up": "加速",
+  "spread out": "展开、散开",
+  "stand by": "支持；袖手旁观；做好准备",
+  "stand for": "代表；主张；容忍",
+  "stand out": "突出、显眼",
+  "stand up": "站起来；经得起",
+  "stand up for": "支持、维护",
+  "stand up to": "勇敢面对；经得起",
+  "stare at": "盯着看、凝视",
+  "start off": "开始、出发",
+  "start up": "启动；创办",
+  "stay away": "远离、不靠近",
+  "stay up": "熬夜",
+  "step back": "后退一步；退一步思考",
+  "step down": "辞职、下台",
+  "step in": "介入、干预",
+  "step up": "增加、加快；走上前",
+  "stick out": "突出、伸出；坚持",
+  "stick to": "坚持、遵守",
+  "stir up": "激起、煽动",
+  "stop by": "顺便拜访",
+  "subject to": "取决于；遭受",
+  "succeed in": "在…方面成功",
+  "such as": "例如、像…这样的",
+  "suffer from": "遭受、患…病",
+  "sum up": "总结、概括",
+  "switch off": "关掉、关闭",
+  "switch on": "打开、开启",
+  "take a look": "看一看",
+  "take account of": "考虑到",
+  "take advantage of": "利用；占…的便宜",
+  "take after": "长得像、性格像",
+  "take apart": "拆开、拆卸",
+  "take away": "拿走、带走",
+  "take back": "退回；收回（说过的话）",
+  "take by surprise": "使吃惊、出其不意",
+  "take care": "保重、当心",
+  "take care of": "照顾、照料；处理",
+  "take charge of": "负责、掌管",
+  "take control of": "控制",
+  "take down": "取下、记下；拆除",
+  "take effect": "生效、起作用",
+  "take for": "误认为、当作",
+  "take for granted": "认为…理所当然",
+  "take in": "吸收；理解；欺骗；收留",
+  "take into account": "考虑到、顾及",
+  "take measures": "采取措施",
+  "take note of": "注意到",
+  "take notice of": "注意到、留意",
+  "take off": "起飞；脱下；休假；迅速成功",
+  "take on": "承担；呈现；雇用；与…较量",
+  "take out": "取出；带…出去；去掉",
+  "take over": "接管、接任",
+  "take part in": "参加、参与",
+  "take place": "发生、举行",
+  "take pride in": "以…为傲",
+  "take the place of": "代替",
+  "take to": "喜欢上；养成…习惯",
+  "take turns": "轮流",
+  "take up": "占据（时间、空间）；开始从事；接受",
+  "talk about": "谈论、讨论",
+  "talk back": "顶嘴、回嘴",
+  "talk into": "说服…做",
+  "talk of": "谈到、说起",
+  "talk out of": "说服…不做",
+  "talk over": "详细讨论、商量",
+  "tear apart": "撕碎；使分裂",
+  "tear down": "拆除、扯下",
+  "tear up": "撕毁、撕碎",
+  "tell apart": "区分、辨别",
+  "tell from": "把…与…区分开",
+  "thanks to": "多亏、由于",
+  "that is to say": "也就是说",
+  "think about": "考虑、思考",
+  "think of": "想到、想起；认为",
+  "think out": "仔细思考、想清楚",
+  "think over": "仔细考虑、深思熟虑",
+  "think through": "全面考虑、想透彻",
+  "think up": "想出、发明",
+  "throw away": "扔掉、丢弃；浪费",
+  "throw light on": "阐明、揭示",
+  "throw off": "摆脱；脱掉",
+  "throw out": "扔掉；赶走；提出",
+  "throw up": "呕吐；放弃",
+  "tidy up": "整理、收拾",
+  "tie in with": "与…一致、与…相符",
+  "tie up": "捆绑；占用；忙于",
+  "time after time": "一次又一次",
+  "tire out": "使筋疲力尽",
+  "to begin with": "首先、起初",
+  "to some extent": "在某种程度上",
+  "to start with": "首先、起初",
+  "to the point": "切中要点、中肯",
+  "try on": "试穿",
+  "try out": "试用、试验",
+  "turn against": "背叛、与…反目",
+  "turn around": "转身；扭转；好转",
+  "turn away": "拒绝入内；转身离开",
+  "turn back": "折回、返回",
+  "turn down": "拒绝；调低（音量等）",
+  "turn in": "上交；上床睡觉",
+  "turn into": "变成、成为",
+  "turn off": "关掉、关闭",
+  "turn on": "打开、开启；取决于",
+  "turn out": "结果是、证明是；生产；出席",
+  "turn over": "翻转；移交；仔细考虑",
+  "turn to": "转向；求助于",
+  "turn up": "出现、露面；调大（音量）",
+  "under arrest": "被逮捕",
+  "under attack": "受到攻击",
+  "under control": "在控制之下",
+  "under discussion": "在讨论中",
+  "under no circumstances": "绝不",
+  "under repair": "在修理中",
+  "under way": "在进行中",
+  "up and down": "上上下下；起伏",
+  "up to": "直到；达到；由…决定；忙于",
+  "up to date": "最新的、现代的",
+  "use up": "用完、耗尽",
+  "used to": "过去常常",
+  "wait for": "等待",
+  "wait on": "伺候、服务",
+  "wake up": "醒来；叫醒",
+  "walk away": "走开、离开",
+  "walk out": "走出去；罢工；退席",
+  "warm up": "变暖；热身",
+  "wash away": "冲走、洗掉",
+  "wash out": "洗掉；冲毁；取消",
+  "wash up": "洗脸洗手；洗碗",
+  "watch for": "等待、留神",
+  "watch out": "当心、小心",
+  "watch out for": "注意、提防",
+  "wear away": "磨损、消逝",
+  "wear down": "磨损；使疲劳",
+  "wear off": "逐渐消失、消退",
+  "wear out": "穿破、用坏；使筋疲力尽",
+  "what about": "…怎么样",
+  "what if": "如果…会怎样",
+  "whether or not": "是否",
+  "wind up": "结束；上发条；最终落到",
+  "wipe out": "彻底消灭、摧毁",
+  "with regard to": "关于",
+  "with respect to": "关于、至于",
+  "with the exception of": "除…之外",
+  "without doubt": "毫无疑问",
+  "work at": "从事于、致力于",
+  "work on": "从事于、努力做；影响",
+  "work out": "锻炼；解决、算出；进展",
+  "work up": "逐步建立；激发",
+  "worry about": "担心、担忧",
+  "would rather": "宁愿、宁可",
+  "write down": "写下、记下",
+  "write off": "注销、勾销（债务）；报废",
+  "year after year": "年复一年",
+  "year by year": "逐年地",
+  "yield to": "屈服于、向…让步",
+};
+
+// Set of all phrase words for fast lookup
+const phraseWords = new Set<string>();
+for (const phrase of Object.keys(commonPhrases)) {
+  for (const word of phrase.split(" ")) {
+    phraseWords.add(word);
+  }
+}
+
+// Detect if a word at the given index is part of a known phrase
+// Returns the matching phrase (lowercase) or null
+export function detectPhrase(
+  words: string[],
+  clickedIndex: number
+): string | null {
+  const clickedWord = words[clickedIndex].toLowerCase();
+
+  // Quick check: is this word part of any known phrase?
+  if (!phraseWords.has(clickedWord)) return null;
+
+  // Check all possible spans centered on the clicked word
+  // Try longest first (3-word), then 2-word
+  for (let span = 3; span >= 2; span--) {
+    // Try different positions of the clicked word within the span
+    for (let start = Math.max(0, clickedIndex - span + 1); start <= clickedIndex; start++) {
+      const end = start + span;
+      if (end > words.length) continue;
+      if (start <= clickedIndex && clickedIndex < end) {
+        const candidate = words.slice(start, end).join(" ").toLowerCase();
+        if (commonPhrases[candidate]) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// Get the Chinese meaning of a known phrase
+export function getPhraseMeaning(phrase: string): string {
+  return commonPhrases[phrase.toLowerCase()] || "";
 }

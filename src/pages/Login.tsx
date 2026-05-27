@@ -1,13 +1,27 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import gsap from "gsap";
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const { signIn } = useAuth();
+  const { signIn, signInAsGuest } = useAuth();
   const navigate = useNavigate();
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (cardRef.current) {
+      gsap.from(cardRef.current, {
+        opacity: 0,
+        y: 40,
+        scale: 0.95,
+        duration: 0.6,
+        ease: "power3.out",
+      });
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,12 +35,13 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-purple-50 px-4">
-      <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-purple-700 text-center mb-6">
+    <div className="min-h-[80vh] flex items-center justify-center px-4 relative z-10">
+      <div ref={cardRef} className="glass rounded-3xl p-8 w-full max-w-sm">
+        <h1 className="text-2xl font-bold text-purple-600 text-center mb-2">
           单词大师
         </h1>
-        <h2 className="text-lg text-gray-600 text-center mb-6">登录</h2>
+        <h2 className="text-sm text-gray-400 text-center mb-8">登录</h2>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <input
             type="email"
@@ -34,7 +49,7 @@ export default function Login() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm"
           />
           <input
             type="password"
@@ -42,19 +57,36 @@ export default function Login() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm"
           />
-          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
           <button
             type="submit"
-            className="w-full py-3 bg-purple-500 hover:bg-purple-600 text-white rounded-xl font-medium transition-colors"
+            className="w-full py-3 bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white rounded-xl font-medium transition-all text-sm"
           >
             登录
           </button>
         </form>
-        <p className="text-sm text-gray-500 text-center mt-4">
+
+        <div className="flex items-center gap-3 my-5">
+          <div className="flex-1 h-px bg-gray-200" />
+          <span className="text-xs text-gray-400">或</span>
+          <div className="flex-1 h-px bg-gray-200" />
+        </div>
+
+        <button
+          onClick={async () => {
+            await signInAsGuest();
+            navigate("/");
+          }}
+          className="w-full py-3 bg-white/40 backdrop-blur-sm hover:bg-white/60 text-gray-600 rounded-xl font-medium transition-all text-sm border border-white/40"
+        >
+          游客登录
+        </button>
+
+        <p className="text-sm text-gray-400 text-center mt-5">
           还没有账号？{" "}
-          <Link to="/register" className="text-purple-600 hover:underline">
+          <Link to="/register" className="text-purple-500 hover:text-purple-600 transition-colors">
             注册
           </Link>
         </p>

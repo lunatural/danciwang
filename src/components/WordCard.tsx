@@ -1,35 +1,46 @@
 import { useState, useEffect } from "react";
-import type { WordData, SynonymData } from "../utils/api";
-import { fetchSynonyms, translateToChinese } from "../utils/api";
+import type { WordData, SynonymData, ExampleSentence } from "../utils/api";
+import { fetchSynonyms, fetchExampleSentences, translateToChinese } from "../utils/api";
 import { analyzeWordRoots } from "../utils/wordRoots";
+import ClickableText from "./ClickableText";
 
 interface Props {
   data: WordData;
   isAdded: boolean;
   onAdd: () => void;
+  examples?: ExampleSentence[];
 }
 
-export default function WordCard({ data, isAdded, onAdd }: Props) {
+export default function WordCard({ data, isAdded, onAdd, examples: propExamples }: Props) {
   const [synonyms, setSynonyms] = useState<SynonymData | null>(null);
   const [cnTranslations, setCnTranslations] = useState<Record<string, string>>({});
+  const [examples, setExamples] = useState<ExampleSentence[]>(propExamples || []);
   const wordRoots = analyzeWordRoots(data.word);
 
   useEffect(() => {
     fetchSynonyms(data.word).then(setSynonyms);
+    if (!propExamples || propExamples.length === 0) {
+      fetchExampleSentences(data.word).then(setExamples);
+    } else {
+      setExamples(propExamples);
+    }
   }, [data.word]);
 
   useEffect(() => {
-    async function translateDefs() {
-      const map: Record<string, string> = {};
-      for (const m of data.meanings) {
-        for (const d of m.definitions.slice(0, 2)) {
-          const cn = await translateToChinese(d.definition);
-          if (cn) map[d.definition] = cn;
-        }
+    const defs: string[] = [];
+    for (const m of data.meanings) {
+      for (const d of m.definitions.slice(0, 2)) {
+        if (d.definition) defs.push(d.definition);
       }
-      setCnTranslations(map);
     }
-    translateDefs();
+    if (defs.length === 0) return;
+    Promise.all(defs.map((d) => translateToChinese(d))).then((results) => {
+      const map: Record<string, string> = {};
+      defs.forEach((d, i) => {
+        if (results[i]) map[d] = results[i];
+      });
+      setCnTranslations(map);
+    });
   }, [data]);
 
   const hasRoots = wordRoots.prefixes.length > 0 || wordRoots.roots.length > 0 || wordRoots.suffixes.length > 0;
@@ -38,27 +49,27 @@ export default function WordCard({ data, isAdded, onAdd }: Props) {
   const combinedSynonyms = [...new Set([...allSynonyms, ...apiSynonyms])];
 
   return (
-    <div className="bg-white rounded-2xl shadow-md p-6 space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="glass-raised rounded-2xl p-4 sm:p-6 space-y-4 sm:space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-2 sm:gap-3">
         <div>
-          <h2 className="text-3xl font-bold text-purple-700">{data.word}</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-purple-700">{data.word}</h2>
           {data.phonetic && (
-            <p className="text-gray-500 mt-1">{data.phonetic}</p>
+            <p className="text-gray-500 mt-1 text-xs sm:text-sm">{data.phonetic}</p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
           {data.audio && (
-            <audio key={data.word} controls className="h-8 w-36">
+            <audio key={data.word} controls className="h-7 sm:h-8 w-28 sm:w-36">
               <source src={data.audio} type="audio/mpeg" />
             </audio>
           )}
           <button
             onClick={onAdd}
             disabled={isAdded}
-            className={`px-4 py-2 rounded-xl font-medium text-sm transition-colors ${
+            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl font-medium text-xs sm:text-sm transition-colors ${
               isAdded
-                ? "bg-green-100 text-green-600 cursor-default"
-                : "bg-purple-500 hover:bg-purple-600 text-white"
+                ? "bg-green-100/70 text-green-600 cursor-default"
+                : "bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white border border-white/30"
             }`}
           >
             {isAdded ? "已添加" : "加入单词本"}
@@ -68,20 +79,20 @@ export default function WordCard({ data, isAdded, onAdd }: Props) {
 
       {data.meanings.map((m, i) => (
         <div key={i}>
-          <span className="inline-block bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-sm font-medium mb-2">
+          <span className="inline-block bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
             {m.partOfSpeech}
           </span>
-          <ul className="space-y-2">
+          <ul className="space-y-1.5 sm:space-y-2">
             {m.definitions.slice(0, 4).map((d, j) => (
-              <li key={j} className="text-gray-700 text-sm">
+              <li key={j} className="text-gray-700 text-xs sm:text-sm">
                 <span className="font-medium text-purple-600">{j + 1}.</span>{" "}
-                {d.definition}
+                <ClickableText text={d.definition} />
                 {cnTranslations[d.definition] && (
-                  <span className="text-purple-500 ml-1">{cnTranslations[d.definition]}</span>
+                  <span className="text-gray-400 ml-1">{cnTranslations[d.definition]}</span>
                 )}
                 {d.example && (
-                  <span className="text-gray-400 block ml-4 mt-0.5 italic">
-                    "{d.example}"
+                  <span className="text-gray-400 block ml-4 mt-0.5 italic text-xs">
+                    "<ClickableText text={d.example} />"
                   </span>
                 )}
               </li>
@@ -91,25 +102,41 @@ export default function WordCard({ data, isAdded, onAdd }: Props) {
       ))}
 
       {combinedSynonyms.length > 0 && (
-        <div className="bg-purple-50 rounded-xl p-4">
-          <p className="text-sm font-medium text-purple-700 mb-2">近义词 Synonyms</p>
-          <div className="flex flex-wrap gap-2">
+        <div className="bg-purple-50/60 backdrop-blur-sm rounded-xl p-3 sm:p-4 border border-purple-100/50">
+          <p className="text-xs sm:text-sm font-medium text-purple-700 mb-1.5 sm:mb-2">近义词 Synonyms</p>
+          <div className="flex flex-wrap gap-1.5 sm:gap-2">
             {combinedSynonyms.slice(0, 15).map((s) => (
               <span
                 key={s}
-                className="bg-white text-purple-600 px-3 py-1 rounded-full text-sm border border-purple-200"
+                className="bg-white text-purple-600 px-2 sm:px-3 py-0.5 sm:py-1 rounded-full text-xs sm:text-sm border border-purple-200"
               >
-                {s}
+                <ClickableText text={s} />
               </span>
             ))}
           </div>
         </div>
       )}
 
+      {examples.length > 0 && (
+        <div className="bg-blue-50/60 backdrop-blur-sm rounded-xl p-3 sm:p-4 border border-blue-100/50">
+          <p className="text-xs sm:text-sm font-medium text-blue-700 mb-2">例句 Examples</p>
+          <ul className="space-y-2 sm:space-y-2.5">
+            {examples.slice(0, 6).map((ex, i) => (
+              <li key={i} className="text-xs sm:text-sm">
+                <p className="text-gray-800 italic">"<ClickableText text={ex.english} />"</p>
+                {ex.chinese && (
+                  <p className="text-blue-600 mt-0.5 ml-2">{ex.chinese}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {hasRoots && (
-        <div className="bg-amber-50 rounded-xl p-4">
-          <p className="text-sm font-medium text-amber-700 mb-2">词根分析 Word Roots</p>
-          <div className="space-y-2 text-sm">
+        <div className="bg-amber-50/60 backdrop-blur-sm rounded-xl p-3 sm:p-4 border border-amber-100/50">
+          <p className="text-xs sm:text-sm font-medium text-amber-700 mb-1.5 sm:mb-2">词根分析 Word Roots</p>
+          <div className="space-y-1.5 sm:space-y-2 text-xs sm:text-sm">
             {wordRoots.prefixes.map((p) => (
               <div key={p.root} className="flex gap-2">
                 <span className="bg-amber-200 text-amber-800 px-2 py-0.5 rounded font-mono text-xs whitespace-nowrap">{p.root}</span>

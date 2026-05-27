@@ -44,10 +44,18 @@ export function useAuth() {
     return null;
   };
 
+  const signInAsGuest = async () => {
+    const guestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const guestUser: AuthUser = { id: guestId, email: "游客" };
+    localStorage.setItem("vocab_current_user", JSON.stringify(guestUser));
+    setUser(guestUser);
+    return null;
+  };
+
   const signOut = async () => {
     localStorage.removeItem("vocab_current_user");
     setUser(null);
   };
 
-  return { user, loading, signUp, signIn, signOut };
+  return { user, loading, signUp, signIn, signInAsGuest, signOut };
 }
