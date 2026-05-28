@@ -4,6 +4,7 @@ import { useAuth } from "../hooks/useAuth";
 import { House, Search, BookOpen, ClipboardList, RefreshCw, Image, X } from "lucide-react";
 import gsap from "gsap";
 import { saveBackground, loadBackground, removeBackground, createBgUrl, type StoredBg } from "../utils/backgroundStore";
+import InstallPWA from "./InstallPWA";
 
 const navItems = [
   { to: "/", label: "首页", Icon: House },
@@ -240,7 +241,7 @@ export default function Layout() {
   }, [activeIndex]);
 
   return (
-    <div className="min-h-screen flex flex-col relative">
+    <div className="min-h-screen flex flex-col relative pt-[env(safe-area-inset-top,0px)] sm:pt-0">
       {/* Custom or default background */}
       {customBg ? (
         customBg.type === "video" ? (
@@ -324,6 +325,7 @@ export default function Layout() {
           </div>
 
           <div className="flex items-center gap-2 shrink-0 ml-4">
+            <InstallPWA />
             <label className="cursor-pointer text-gray-400 hover:text-purple-500 transition-colors" title="更换背景">
               <Image size={15} strokeWidth={1.5} />
               <input type="file" accept="image/*,video/*" onChange={handleBgUpload} className="hidden" />
@@ -363,11 +365,12 @@ export default function Layout() {
       </nav>
 
       {/* Mobile top bar: just branding */}
-      <div className="sm:hidden flex items-center justify-between px-4 h-12 glass border-b border-white/30 sticky top-0 z-40">
+      <div className="sm:hidden flex items-center justify-between px-4 h-12 glass border-b border-white/30 sticky top-[env(safe-area-inset-top,0px)] z-40">
         <Link to="/" className="text-base font-bold text-purple-600">
           单词大师
         </Link>
         <div className="flex items-center gap-3">
+          <InstallPWA />
           <label className="cursor-pointer text-gray-400 active:text-purple-500 transition-colors" title="更换背景">
             <Image size={18} strokeWidth={1.5} />
             <input type="file" accept="image/*,video/*" onChange={handleBgUpload} className="hidden" />

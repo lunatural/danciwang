@@ -78,7 +78,7 @@ export default function FlashCard({ data, flipped, onClick, examples = [] }: Pro
 
   return (
     <div
-      className="flip-card relative w-full max-w-md mx-auto h-56 sm:h-72"
+      className="flip-card relative w-full max-w-md mx-auto min-h-[200px] h-[50vh] max-h-[360px] sm:h-[55vh] sm:max-h-[400px]"
       style={{ touchAction: "manipulation" }}
     >
       {/* Corner flip buttons */}
@@ -118,10 +118,10 @@ export default function FlashCard({ data, flipped, onClick, examples = [] }: Pro
 
         {/* Back face — no hover transform */}
         <div
-          className="flip-card-back absolute inset-0 rounded-2xl flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto"
+          className="flip-card-back absolute inset-0 rounded-2xl flex flex-col items-center justify-start p-4 sm:p-6 overflow-y-auto"
           style={faceGlass}
         >
-          <p className="text-lg sm:text-xl font-bold text-purple-700 mb-1 mt-2">{data.word}</p>
+          <p className="text-lg sm:text-xl font-bold text-purple-700 mb-1 mt-1">{data.word}</p>
           {partOfSpeech && (
             <span className="text-xs bg-purple-200/70 text-purple-700 px-2 py-0.5 rounded mb-1.5 sm:mb-2">
               {partOfSpeech}

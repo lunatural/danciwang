@@ -37,6 +37,15 @@
 - 今日学习统计 + 分享打卡图片生成
 - 快捷入口直达查词、学习、复习
 
+## 安装到桌面（PWA）
+
+应用支持 PWA 渐进式应用，可安装到手机和电脑桌面：
+
+- **Android / 电脑（Chrome/Edge）**：点击导航栏右侧的下载图标，一键安装
+- **iOS Safari**：点击下载图标查看安装引导，或点击分享按钮 →「添加到主屏幕」
+
+安装后以独立窗口运行，支持离线访问。
+
 ## 技术栈
 
 | 类别 | 技术 |
@@ -54,6 +63,7 @@
 | 翻译 API | MyMemory API |
 | 分享图片 | Canvas 渲染 |
 | 存储 | localStorage |
+| PWA | Service Worker + Web App Manifest |
 | 部署 | Cloudflare Pages |
 
 ## 本地开发
