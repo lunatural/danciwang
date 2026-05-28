@@ -1,0 +1,31 @@
+{
+  "name": "单词大师 - 智能单词记忆",
+  "short_name": "单词大师",
+  "description": "智能英语单词学习应用，支持查词、学习、间隔复习一站式流程",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#faf5ff",
+  "theme_color": "#8b5cf6",
+  "orientation": "portrait",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
