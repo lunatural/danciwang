@@ -49,6 +49,10 @@ export default function Learn() {
   // Word data cache for instant switching
   const wordCache = useRef<Map<string, { data: WordData; examples: ExampleSentence[] }>>(new Map());
   const prefetching = useRef<Set<string>>(new Set());
+  // Track current word to prevent stale responses
+  const currentWordRef = useRef<string>("");
+  const wordsRef = useRef<string[]>([]);
+  wordsRef.current = words;
 
   const wordGroupMap = new Map<string, string>();
   if (user) {
@@ -116,7 +120,10 @@ export default function Learn() {
     [originalWords]
   );
 
-  const loadWord = (word: string) => {
+  const loadWord = useCallback((word: string) => {
+    // Mark this word as current — stale responses will be ignored
+    currentWordRef.current = word;
+
     // Check cache first — instant display
     const cached = wordCache.current.get(word);
     if (cached) {
@@ -124,9 +131,9 @@ export default function Learn() {
       setExamples(cached.examples);
       setLoadingWord(false);
       // Pre-fetch next word
-      const idx = words.indexOf(word);
-      if (idx >= 0 && idx + 1 < words.length) {
-        prefetchWord(words[idx + 1]);
+      const idx = wordsRef.current.indexOf(word);
+      if (idx >= 0 && idx + 1 < wordsRef.current.length) {
+        prefetchWord(wordsRef.current[idx + 1]);
       }
       return;
     }
@@ -135,6 +142,8 @@ export default function Learn() {
 
     // Try ECDICT for instant display while API loads
     searchLocalDict(word).then((local) => {
+      // Ignore stale response
+      if (currentWordRef.current !== word) return;
       if (local) {
         const localData: WordData = {
           word: local.word,
@@ -164,6 +173,8 @@ export default function Learn() {
       fetchWord(word),
       fetchExampleSentences(word),
     ]).then(([data, exs]) => {
+      // Ignore stale response
+      if (currentWordRef.current !== word) return;
       if (data) {
         wordCache.current.set(word, { data, examples: exs });
         setWordData(data);
@@ -171,27 +182,28 @@ export default function Learn() {
       }
       setLoadingWord(false);
       // Pre-fetch next word
-      const idx = words.indexOf(word);
-      if (idx >= 0 && idx + 1 < words.length) {
-        prefetchWord(words[idx + 1]);
+      const idx = wordsRef.current.indexOf(word);
+      if (idx >= 0 && idx + 1 < wordsRef.current.length) {
+        prefetchWord(wordsRef.current[idx + 1]);
       }
     });
-  };
+  }, []);
 
   // Pre-fetch word data into cache in background
-  const prefetchWord = (word: string) => {
+  const prefetchWord = useCallback((word: string) => {
     if (wordCache.current.has(word) || prefetching.current.has(word)) return;
     prefetching.current.add(word);
     Promise.all([
       fetchWord(word),
       fetchExampleSentences(word),
     ]).then(([data, exs]) => {
+      // Only cache if data is valid
       if (data) wordCache.current.set(word, { data, examples: exs });
       prefetching.current.delete(word);
     }).catch(() => {
       prefetching.current.delete(word);
     });
-  };
+  }, []);
 
   // Fetch Chinese translations for definitions
   useEffect(() => {
