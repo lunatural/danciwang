@@ -30,20 +30,52 @@ function saveSyncQueue(userId: string, queue: SyncOperation[]): void {
   localStorage.setItem(syncQueueKey(userId), JSON.stringify(queue));
 }
 
+function opKey(op: SyncOperation): string {
+  // Deduplicate by op type + word (or group name for delete_group)
+  const w = op.payload.word || op.payload.group || op.payload.id || "";
+  return `${op.op}:${w}`;
+}
+
 export function enqueueSyncOp(userId: string, op: SyncOperation): void {
   const queue = getSyncQueue(userId);
-  queue.push({ ...op, timestamp: new Date().toISOString() });
-  saveSyncQueue(userId, queue);
+  const key = opKey(op);
+
+  // Deduplicate: remove existing entry for same op+word
+  const filtered = queue.filter((o) => opKey(o) !== key);
+  filtered.push({ ...op, timestamp: new Date().toISOString() });
+
+  // Limit queue to 200 entries, drop oldest
+  if (filtered.length > 200) {
+    filtered.splice(0, filtered.length - 200);
+  }
+
+  saveSyncQueue(userId, filtered);
 }
+
+/** Maximum time (ms) to spend flushing the queue */
+const MAX_FLUSH_TIME = 30000; // 30 seconds
 
 export async function flushSyncQueue(userId: string): Promise<number> {
   const queue = getSyncQueue(userId);
   if (queue.length === 0) return 0;
 
+  // Drop stale entries older than 7 days
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const fresh = queue.filter((op) => new Date(op.timestamp).getTime() > cutoff);
+  if (fresh.length !== queue.length) {
+    saveSyncQueue(userId, fresh);
+  }
+
   let flushed = 0;
   const failed: SyncOperation[] = [];
+  const start = Date.now();
 
-  for (const op of queue) {
+  for (const op of fresh) {
+    if (Date.now() - start > MAX_FLUSH_TIME) {
+      // Time's up, keep remaining in queue
+      failed.push(op);
+      continue;
+    }
     try {
       await executeSyncOp(userId, op);
       flushed++;
@@ -301,6 +333,40 @@ export async function pullAllFromCloud(userId: string): Promise<CloudData | null
     console.warn("pullAllFromCloud failed:", err);
     return null;
   }
+}
+
+/**
+ * Merge cloud data into localStorage. Cloud wins on conflict.
+ * Local entries not in cloud are preserved (no data loss).
+ */
+export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
+  // ── Words ──
+  const localWordsRaw = localStorage.getItem(`vocab_words_${userId}`);
+  const localWords: WordEntry[] = localWordsRaw ? JSON.parse(localWordsRaw) : [];
+  const cloudWordSet = new Set<string>();
+  for (const cw of cloud.words) {
+    cloudWordSet.add(`${cw.word}|${cw.group}`);
+  }
+  // Remove local entries that are also in cloud (will be replaced)
+  const localOnly = localWords.filter((lw) => !cloudWordSet.has(`${lw.word}|${lw.group}`));
+  // Merge: local-only entries + all cloud entries
+  const merged = [...localOnly, ...cloud.words];
+  localStorage.setItem(`vocab_words_${userId}`, JSON.stringify(merged));
+
+  // ── Learning ──
+  const localLearningRaw = localStorage.getItem(`vocab_learning_${userId}`);
+  const localLearning: string[] = localLearningRaw ? JSON.parse(localLearningRaw) : [];
+  const cloudLearningSet = new Set(cloud.learning);
+  const learningMerged = [...new Set([...localLearning, ...cloudLearningSet])];
+  localStorage.setItem(`vocab_learning_${userId}`, JSON.stringify(learningMerged));
+
+  // ── Review Schedule ──
+  const localScheduleRaw = localStorage.getItem(`vocab_schedule_${userId}`);
+  const localSchedule: ReviewSchedule[] = localScheduleRaw ? JSON.parse(localScheduleRaw) : [];
+  const cloudScheduleIds = new Set(cloud.schedule.map((s) => s.id));
+  const localOnlySchedule = localSchedule.filter((ls) => !cloudScheduleIds.has(ls.id));
+  const scheduleMerged = [...localOnlySchedule, ...cloud.schedule];
+  localStorage.setItem(`vocab_schedule_${userId}`, JSON.stringify(scheduleMerged));
 }
 
 export async function pushWordsToCloud(

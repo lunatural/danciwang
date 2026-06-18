@@ -9,7 +9,7 @@ import Search from "./pages/Search";
 import Learn from "./pages/Learn";
 import WordList from "./pages/WordList";
 import Review from "./pages/Review";
-import { pullAllFromCloud, flushSyncQueue } from "./hooks/useSync";
+import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal } from "./hooks/useSync";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 
 // ── Sync Context ────────────────────────────────────────────────────
@@ -46,19 +46,15 @@ function Protected({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Online Supabase user: pull from cloud first
+    // Online Supabase user: pull from cloud first (don't block on queue flush)
     let cancelled = false;
     const initSync = async () => {
       try {
-        // Push any queued changes from last session
-        await flushSyncQueue(user.id);
         // Pull latest from cloud
         const cloud = await pullAllFromCloud(user.id);
         if (!cancelled && cloud) {
-          // Always overwrite local with cloud data (cloud is source of truth)
-          localStorage.setItem(`vocab_words_${user.id}`, JSON.stringify(cloud.words));
-          localStorage.setItem(`vocab_learning_${user.id}`, JSON.stringify(cloud.learning));
-          localStorage.setItem(`vocab_schedule_${user.id}`, JSON.stringify(cloud.schedule));
+          // Merge cloud data with local (cloud wins on conflict, preserve local-only)
+          mergeCloudIntoLocal(user.id, cloud);
         }
       } catch {
         // Sync failed, use local data
@@ -66,6 +62,10 @@ function Protected({ children }: { children: React.ReactNode }) {
       if (!cancelled) {
         setSyncVersion((v) => v + 1);
         setSyncReady(true);
+      }
+      // Flush queue in background (don't block UI)
+      if (!cancelled) {
+        flushSyncQueue(user.id).catch(() => {});
       }
     };
 
