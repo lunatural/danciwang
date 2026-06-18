@@ -4,7 +4,7 @@ import { useAuth } from "../hooks/useAuth";
 import SearchBar from "../components/SearchBar";
 import WordCard from "../components/WordCard";
 import { fetchWord, translateLongText, translateToEnglish, fetchExampleSentences, type WordData, type ExampleSentence } from "../utils/api";
-import { addWord, isWordAdded, addToLearning } from "../hooks/useData";
+import { addWord, isWordAdded, addToLearning, removeWord } from "../hooks/useData";
 import { Search as SearchIcon, Languages, Database } from "lucide-react";
 import { searchAnki } from "../utils/ankiParser";
 import { searchLocalDict, preloadDict } from "../utils/localDict";
@@ -147,6 +147,12 @@ export default function Search() {
     setAdded(true);
   };
 
+  const handleRemove = () => {
+    if (!wordData || !user) return;
+    removeWord(user.id, wordData.word);
+    setAdded(false);
+  };
+
   const handleTranslate = async () => {
     const text = transInput.trim();
     if (!text) return;
@@ -228,7 +234,7 @@ export default function Search() {
                   数据来源：Anki 词库
                 </div>
               )}
-              <WordCard data={wordData} isAdded={added} onAdd={handleAdd} examples={examples} />
+              <WordCard data={wordData} isAdded={added} onAdd={handleAdd} onRemove={handleRemove} examples={examples} />
             </>
           )}
         </>

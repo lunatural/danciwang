@@ -2,12 +2,12 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
-import { getLearningWords, getWords, moveToReview } from "../hooks/useData";
+import { getLearningWords, getWords, moveToReview, removeFromLearning } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
 import { searchLocalDict } from "../utils/localDict";
 import ClickableText from "../components/ClickableText";
-import { BookOpen, Check } from "lucide-react";
+import { BookOpen, Check, SkipForward } from "lucide-react";
 import gsap from "gsap";
 
 type SortMode = "default" | "random" | "az" | "za";
@@ -272,6 +272,24 @@ export default function Learn() {
     loadWord(remaining[nextIndex]);
   };
 
+  const handleSkip = () => {
+    if (!user || words.length === 0) return;
+    const word = words[currentIndex];
+    removeFromLearning(user.id, word);
+    setAllLearningWords((prev) => prev.filter((w) => w !== word));
+    const remainingOriginal = originalWords.filter((w) => w !== word);
+    setOriginalWords(remainingOriginal);
+    const remaining = words.filter((_, i) => i !== currentIndex);
+    setWords(remaining);
+    if (remaining.length === 0) {
+      setWordData(null);
+      return;
+    }
+    const nextIndex = currentIndex >= remaining.length ? 0 : currentIndex;
+    setCurrentIndex(nextIndex);
+    loadWord(remaining[nextIndex]);
+  };
+
   const sortOptions: { value: SortMode; label: string }[] = [
     { value: "default", label: "默认顺序" },
     { value: "az", label: "A-Z" },
@@ -474,7 +492,14 @@ export default function Learn() {
                 </div>
               )}
 
-              <div className="flex justify-center pt-2 sm:pt-4">
+              <div className="flex justify-center gap-3 pt-2 sm:pt-4">
+                <button
+                  onClick={handleSkip}
+                  className="px-4 sm:px-6 py-2.5 sm:py-3 bg-gray-300/60 backdrop-blur-sm hover:bg-gray-300/80 text-gray-600 rounded-xl font-medium text-sm sm:text-base transition-all border border-white/30 inline-flex items-center gap-2"
+                >
+                  <SkipForward size={18} strokeWidth={2} />
+                  跳过
+                </button>
                 <button
                   onClick={handleLearned}
                   className="px-6 sm:px-8 py-2.5 sm:py-3 bg-green-400/70 backdrop-blur-sm hover:bg-green-400/85 text-white rounded-xl font-medium text-base sm:text-lg transition-all border border-white/30 inline-flex items-center gap-2"

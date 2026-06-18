@@ -99,12 +99,14 @@ async function executeSyncOp(userId: string, op: SyncOperation): Promise<void> {
       }, { onConflict: "user_id, word" });
       break;
     case "delete_word": {
-      // Delete specific word in a specific group
+      // Delete word; if group is specified, only from that group; otherwise all groups
       const w = op.payload.word as string;
-      await supabase.from("words").delete()
+      const g = op.payload.group as string || "";
+      let q = supabase.from("words").delete()
         .eq("user_id", userId)
-        .eq("word", w)
-        .eq("group", op.payload.group as string);
+        .eq("word", w);
+      if (g) q = q.eq("group", g);
+      await q;
       break;
     }
     case "delete_group":

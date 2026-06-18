@@ -8,10 +8,11 @@ interface Props {
   data: WordData;
   isAdded: boolean;
   onAdd: () => void;
+  onRemove?: () => void;
   examples?: ExampleSentence[];
 }
 
-export default function WordCard({ data, isAdded, onAdd, examples: propExamples }: Props) {
+export default function WordCard({ data, isAdded, onAdd, onRemove, examples: propExamples }: Props) {
   const [synonyms, setSynonyms] = useState<SynonymData | null>(null);
   const [cnTranslations, setCnTranslations] = useState<Record<string, string>>({});
   const [examples, setExamples] = useState<ExampleSentence[]>(propExamples || []);
@@ -64,15 +65,14 @@ export default function WordCard({ data, isAdded, onAdd, examples: propExamples 
             </audio>
           )}
           <button
-            onClick={onAdd}
-            disabled={isAdded}
+            onClick={isAdded && onRemove ? onRemove : onAdd}
             className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl font-medium text-xs sm:text-sm transition-colors ${
               isAdded
-                ? "bg-green-100/70 text-green-600 cursor-default"
+                ? "bg-red-100/70 text-red-600 hover:bg-red-200/70"
                 : "bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white border border-white/30"
             }`}
           >
-            {isAdded ? "已添加" : "加入单词本"}
+            {isAdded ? "已添加 ✕" : "加入单词本"}
           </button>
         </div>
       </div>

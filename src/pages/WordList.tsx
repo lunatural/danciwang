@@ -79,9 +79,11 @@ export default function WordList() {
     loadWords();
   }, [user, syncVersion]);
 
-  const handleRemoveWord = (word: string, group: string) => {
+  const handleRemoveWord = (word: string) => {
     if (!user) return;
-    removeWord(user.id, word, group);
+    // Delete from ALL groups (complete delete, not just from current group)
+    removeWord(user.id, word);
+    // Clean up review schedule
     const schedule = getReviewSchedule(user.id);
     const item = schedule.find((s) => s.word === word);
     if (item) removeReviewSchedule(user.id, item.id);
@@ -308,7 +310,7 @@ export default function WordList() {
                       >
                         <span className="text-xs sm:text-sm text-gray-700">{word}</span>
                         <button
-                          onClick={() => handleRemoveWord(word, group.name)}
+                          onClick={() => handleRemoveWord(word)}
                           className="text-[10px] sm:text-xs text-gray-400 hover:text-red-500 transition-colors"
                         >
                           删除
