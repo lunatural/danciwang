@@ -96,7 +96,6 @@ async function executeSyncOp(userId: string, op: SyncOperation): Promise<void> {
         word: op.payload.word as string,
         group: op.payload.group as string,
         added_at: op.payload.addedAt as string,
-        updated_at: new Date().toISOString(),
       }, { onConflict: "user_id, word" });
       break;
     case "delete_word": {
@@ -118,7 +117,6 @@ async function executeSyncOp(userId: string, op: SyncOperation): Promise<void> {
         user_id: userId,
         word: op.payload.word as string,
         added_at: op.payload.addedAt as string,
-        updated_at: new Date().toISOString(),
       }, { onConflict: "user_id, word" });
       break;
     case "remove_learning":
@@ -185,7 +183,6 @@ export async function upsertWordToCloud(userId: string, entry: WordEntry): Promi
     word: entry.word,
     group: entry.group,
     added_at: entry.addedAt,
-    updated_at: new Date().toISOString(),
   }, { onConflict: "user_id, word" });
 
   if (error) console.warn("upsertWordToCloud error:", error.message);
@@ -239,7 +236,6 @@ export async function upsertLearningToCloud(userId: string, word: string): Promi
     user_id: userId,
     word,
     added_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
   }, { onConflict: "user_id, word" });
   if (error) console.warn("upsertLearningToCloud error:", error.message);
 }
@@ -380,7 +376,6 @@ export async function pushWordsToCloud(
     word: w.word,
     group: w.group,
     added_at: w.addedAt,
-    updated_at: new Date().toISOString(),
   }));
 
   for (let i = 0; i < rows.length; i += chunkSize) {
@@ -404,7 +399,6 @@ export async function pushLearningToCloud(
     user_id: userId,
     word: w,
     added_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
   }));
 
   for (let i = 0; i < rows.length; i += chunkSize) {
