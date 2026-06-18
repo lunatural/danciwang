@@ -134,7 +134,7 @@ async function executeSyncOp(userId: string, op: SyncOperation): Promise<void> {
         repetitions: op.payload.repetitions as number,
         next_review_at: op.payload.nextReviewAt as string,
         last_review_at: op.payload.lastReviewAt as string,
-      }, { onConflict: "id" });
+      }, { onConflict: "user_id, word" });
       break;
     case "remove_schedule":
       await supabase.from("review_schedule").delete()
@@ -299,7 +299,7 @@ export async function upsertScheduleToCloud(userId: string, item: ReviewSchedule
     repetitions: item.repetitions,
     next_review_at: item.nextReviewAt,
     last_review_at: item.lastReviewAt,
-  }, { onConflict: "id" });
+  }, { onConflict: "user_id, word" });
   if (error) console.warn("upsertScheduleToCloud error:", error.message);
 }
 
@@ -356,11 +356,11 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
   const learningMerged = [...new Set([...localLearning, ...cloudLearningSet])];
   localStorage.setItem(`vocab_learning_${userId}`, JSON.stringify(learningMerged));
 
-  // ── Review Schedule ──
+  // ── Review Schedule ── (merge by word, not id)
   const localScheduleRaw = localStorage.getItem(`vocab_schedule_${userId}`);
   const localSchedule: ReviewSchedule[] = localScheduleRaw ? JSON.parse(localScheduleRaw) : [];
-  const cloudScheduleIds = new Set(cloud.schedule.map((s) => s.id));
-  const localOnlySchedule = localSchedule.filter((ls) => !cloudScheduleIds.has(ls.id));
+  const cloudScheduleWords = new Set(cloud.schedule.map((s) => s.word));
+  const localOnlySchedule = localSchedule.filter((ls) => !cloudScheduleWords.has(ls.word));
   const scheduleMerged = [...localOnlySchedule, ...cloud.schedule];
   localStorage.setItem(`vocab_schedule_${userId}`, JSON.stringify(scheduleMerged));
 }
@@ -432,7 +432,7 @@ export async function pushScheduleToCloud(
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
     const { error } = await supabase.from("review_schedule").upsert(chunk, {
-      onConflict: "id",
+      onConflict: "user_id, word",
     });
     if (error) {
       console.warn("pushScheduleToCloud batch error:", error.message);
