@@ -9,7 +9,7 @@ import Search from "./pages/Search";
 import Learn from "./pages/Learn";
 import WordList from "./pages/WordList";
 import Review from "./pages/Review";
-import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal } from "./hooks/useSync";
+import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal, pushWordsToCloud, pushLearningToCloud, pushScheduleToCloud } from "./hooks/useSync";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 
 // ── Sync Context ────────────────────────────────────────────────────
@@ -46,15 +46,47 @@ function Protected({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Online Supabase user: pull from cloud first (don't block on queue flush)
+    // Online Supabase user: pull from cloud first, then push local if needed
     let cancelled = false;
     const initSync = async () => {
       try {
-        // Pull latest from cloud
+        // Step 1: Pull latest from cloud
         const cloud = await pullAllFromCloud(user.id);
         if (!cancelled && cloud) {
           // Merge cloud data with local (cloud wins on conflict, preserve local-only)
           mergeCloudIntoLocal(user.id, cloud);
+        }
+
+        // Step 2: If local has more data than cloud, push all local to cloud
+        // This handles the case where cloud was empty (tables just created)
+        if (!cancelled && cloud) {
+          const fullPushKey = `vocab_full_push_${user.id}`;
+          const hasFullPushed = localStorage.getItem(fullPushKey);
+
+          if (!hasFullPushed) {
+            // Read local data (already merged with cloud)
+            const localWordsRaw = localStorage.getItem(`vocab_words_${user.id}`);
+            const localLearningRaw = localStorage.getItem(`vocab_learning_${user.id}`);
+            const localScheduleRaw = localStorage.getItem(`vocab_schedule_${user.id}`);
+
+            const localWords = localWordsRaw ? JSON.parse(localWordsRaw) : [];
+            const localLearning = localLearningRaw ? JSON.parse(localLearningRaw) : [];
+            const localSchedule = localScheduleRaw ? JSON.parse(localScheduleRaw) : [];
+
+            // Push if local has more data than cloud
+            if (localWords.length > cloud.words.length) {
+              await pushWordsToCloud(user.id, localWords).catch(() => {});
+            }
+            if (localLearning.length > cloud.learning.length) {
+              await pushLearningToCloud(user.id, localLearning).catch(() => {});
+            }
+            if (localSchedule.length > cloud.schedule.length) {
+              await pushScheduleToCloud(user.id, localSchedule).catch(() => {});
+            }
+
+            // Mark full push done to avoid repeating
+            localStorage.setItem(fullPushKey, "true");
+          }
         }
       } catch {
         // Sync failed, use local data
