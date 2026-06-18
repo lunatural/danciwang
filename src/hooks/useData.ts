@@ -1,3 +1,16 @@
+import {
+  upsertWordToCloud,
+  deleteWordFromCloud,
+  deleteGroupFromCloud,
+  pushWordsToCloud,
+  upsertLearningToCloud,
+  removeLearningFromCloud,
+  pushLearningToCloud,
+  upsertScheduleToCloud,
+  removeScheduleFromCloud,
+  enqueueSyncOp,
+} from "./useSync";
+
 export interface WordEntry {
   word: string;
   group: string;
@@ -19,7 +32,27 @@ function storageKey(type: string, userId: string) {
   return `vocab_${type}_${userId}`;
 }
 
-// Words with group info
+// ── Cloud User Detection ───────────────────────────────────────────
+
+function isCloudUser(userId: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId);
+}
+
+function isOnline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine;
+}
+
+function cloudOrQueue(userId: string, fn: () => Promise<void>, op: Parameters<typeof enqueueSyncOp>[1]): void {
+  if (!isCloudUser(userId)) return;
+  if (isOnline()) {
+    fn().catch(() => enqueueSyncOp(userId, op));
+  } else {
+    enqueueSyncOp(userId, op);
+  }
+}
+
+// ── Words ───────────────────────────────────────────────────────────
+
 export function getWords(userId: string): WordEntry[] {
   const data = localStorage.getItem(storageKey("words", userId));
   if (!data) return [];
@@ -39,8 +72,14 @@ export function getWords(userId: string): WordEntry[] {
 export function addWord(userId: string, word: string, group = "手动添加") {
   const words = getWords(userId);
   if (!words.find((w) => w.word === word && w.group === group)) {
-    words.push({ word, group, addedAt: new Date().toISOString() });
+    const entry: WordEntry = { word, group, addedAt: new Date().toISOString() };
+    words.push(entry);
     localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
+
+    cloudOrQueue(userId,
+      () => upsertWordToCloud(userId, entry),
+      { op: "insert_word", payload: { word, group, addedAt: entry.addedAt } }
+    );
   }
 }
 
@@ -50,6 +89,12 @@ export function removeWord(userId: string, word: string, group?: string) {
     return w.word !== word;
   });
   localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
+
+  cloudOrQueue(userId,
+    () => deleteWordFromCloud(userId, word, group),
+    { op: "delete_word", payload: { word, group: group || "" } }
+  );
+
   // Only remove from learning if the word is no longer in any group
   if (group === undefined || !words.some((w) => w.word === word)) {
     removeFromLearning(userId, word);
@@ -60,6 +105,12 @@ export function removeGroup(userId: string, group: string) {
   const toRemove = getWords(userId).filter((w) => w.group === group);
   const words = getWords(userId).filter((w) => w.group !== group);
   localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
+
+  cloudOrQueue(userId,
+    () => deleteGroupFromCloud(userId, group),
+    { op: "delete_group", payload: { group } }
+  );
+
   for (const w of toRemove) {
     removeFromLearning(userId, w.word);
     const schedule = getReviewSchedule(userId);
@@ -86,7 +137,8 @@ export function isWordAdded(userId: string, word: string): boolean {
   return getWords(userId).some((w) => w.word === word);
 }
 
-// Learning status
+// ── Learning ────────────────────────────────────────────────────────
+
 export function getLearningWords(userId: string): string[] {
   const data = localStorage.getItem(storageKey("learning", userId));
   return data ? JSON.parse(data) : [];
@@ -97,6 +149,11 @@ export function addToLearning(userId: string, word: string) {
   if (!learning.includes(word)) {
     learning.push(word);
     localStorage.setItem(storageKey("learning", userId), JSON.stringify(learning));
+
+    cloudOrQueue(userId,
+      () => upsertLearningToCloud(userId, word),
+      { op: "insert_learning", payload: { word, addedAt: new Date().toISOString() } }
+    );
   }
 }
 
@@ -110,10 +167,13 @@ export function batchImportWords(
   const existingPairs = new Set(words.map((w) => `${w.word}|${w.group}`));
   const now = new Date().toISOString();
   let added = 0;
+  const newEntries: WordEntry[] = [];
 
   for (const word of wordList) {
     if (!existingPairs.has(`${word}|${group}`)) {
-      words.push({ word, group, addedAt: now });
+      const entry: WordEntry = { word, group, addedAt: now };
+      words.push(entry);
+      newEntries.push(entry);
       existingPairs.add(`${word}|${group}`);
       added++;
     }
@@ -124,26 +184,57 @@ export function batchImportWords(
 
   localStorage.setItem(storageKey("words", userId), JSON.stringify(words));
   localStorage.setItem(storageKey("learning", userId), JSON.stringify(learning));
+
+  // Cloud sync for batch import
+  if (isCloudUser(userId) && newEntries.length > 0) {
+    if (isOnline()) {
+      pushWordsToCloud(userId, newEntries).catch(() => {
+        for (const e of newEntries) {
+          enqueueSyncOp(userId, { op: "insert_word", payload: { word: e.word, group: e.group, addedAt: e.addedAt } });
+        }
+      });
+      pushLearningToCloud(userId, wordList).catch(() => {
+        for (const w of wordList) {
+          enqueueSyncOp(userId, { op: "insert_learning", payload: { word: w, addedAt: now } });
+        }
+      });
+    } else {
+      for (const e of newEntries) {
+        enqueueSyncOp(userId, { op: "insert_word", payload: { word: e.word, group: e.group, addedAt: e.addedAt } });
+      }
+      for (const w of wordList) {
+        enqueueSyncOp(userId, { op: "insert_learning", payload: { word: w, addedAt: now } });
+      }
+    }
+  }
+
   return added;
 }
 
 export function removeFromLearning(userId: string, word: string) {
   const learning = getLearningWords(userId).filter((w) => w !== word);
   localStorage.setItem(storageKey("learning", userId), JSON.stringify(learning));
+
+  cloudOrQueue(userId,
+    () => removeLearningFromCloud(userId, word),
+    { op: "remove_learning", payload: { word } }
+  );
 }
 
 export function moveToReview(userId: string, word: string) {
   removeFromLearning(userId, word);
   const schedule = getReviewSchedule(userId);
   const existing = schedule.find((s) => s.word === word);
+  let item: ReviewSchedule;
   if (existing) {
     existing.easeFactor = 2.5;
     existing.intervalDays = 0;
     existing.repetitions = 0;
     existing.nextReviewAt = new Date().toISOString();
     existing.lastReviewAt = new Date().toISOString();
+    item = existing;
   } else {
-    schedule.push({
+    item = {
       id: crypto.randomUUID(),
       userId,
       word,
@@ -152,12 +243,21 @@ export function moveToReview(userId: string, word: string) {
       repetitions: 0,
       nextReviewAt: new Date().toISOString(),
       lastReviewAt: new Date().toISOString(),
-    });
+    };
+    schedule.push(item);
   }
   localStorage.setItem(storageKey("schedule", userId), JSON.stringify(schedule));
+
+  // Sync the schedule item to cloud
+  const s = item;
+  cloudOrQueue(userId,
+    () => upsertScheduleToCloud(userId, s),
+    { op: "upsert_schedule", payload: { ...s } }
+  );
 }
 
-// Review schedule
+// ── Review Schedule ─────────────────────────────────────────────────
+
 export function getReviewSchedule(userId: string): ReviewSchedule[] {
   const data = localStorage.getItem(storageKey("schedule", userId));
   return data ? JSON.parse(data) : [];
@@ -173,10 +273,21 @@ export function updateReviewSchedule(
   if (idx !== -1) {
     schedule[idx] = { ...schedule[idx], ...updated };
     localStorage.setItem(storageKey("schedule", userId), JSON.stringify(schedule));
+
+    const item = schedule[idx];
+    cloudOrQueue(userId,
+      () => upsertScheduleToCloud(userId, item),
+      { op: "upsert_schedule", payload: { ...item } }
+    );
   }
 }
 
 export function removeReviewSchedule(userId: string, id: string) {
   const schedule = getReviewSchedule(userId).filter((s) => s.id !== id);
   localStorage.setItem(storageKey("schedule", userId), JSON.stringify(schedule));
+
+  cloudOrQueue(userId,
+    () => removeScheduleFromCloud(userId, id),
+    { op: "remove_schedule", payload: { id } }
+  );
 }

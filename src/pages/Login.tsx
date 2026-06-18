@@ -7,6 +7,7 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const { signIn, signInAsGuest } = useAuth();
   const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
@@ -26,11 +27,18 @@ export default function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    const err = await signIn(email, password);
-    if (err) {
-      setError(err.message || "登录失败");
-    } else {
-      navigate("/");
+    setLoading(true);
+    try {
+      const err = await signIn(email, password);
+      if (err) {
+        setError(err.message || "登录失败");
+      } else {
+        navigate("/");
+      }
+    } catch {
+      setError("登录失败，请检查网络连接");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -49,7 +57,8 @@ export default function Login() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm"
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50"
           />
           <input
             type="password"
@@ -57,14 +66,16 @@ export default function Login() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm"
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50"
           />
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
           <button
             type="submit"
-            className="w-full py-3 bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white rounded-xl font-medium transition-all text-sm"
+            disabled={loading}
+            className="w-full py-3 bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white rounded-xl font-medium transition-all text-sm disabled:opacity-60"
           >
-            登录
+            {loading ? "登录中..." : "登录"}
           </button>
         </form>
 
@@ -76,10 +87,18 @@ export default function Login() {
 
         <button
           onClick={async () => {
-            await signInAsGuest();
-            navigate("/");
+            setLoading(true);
+            try {
+              await signInAsGuest();
+              navigate("/");
+            } catch {
+              setError("游客登录失败");
+            } finally {
+              setLoading(false);
+            }
           }}
-          className="w-full py-3 bg-white/40 backdrop-blur-sm hover:bg-white/60 text-gray-600 rounded-xl font-medium transition-all text-sm border border-white/40"
+          disabled={loading}
+          className="w-full py-3 bg-white/40 backdrop-blur-sm hover:bg-white/60 text-gray-600 rounded-xl font-medium transition-all text-sm border border-white/40 disabled:opacity-50"
         >
           游客登录
         </button>

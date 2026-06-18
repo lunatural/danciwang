@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-import { House, Search, BookOpen, ClipboardList, RefreshCw, Image, X } from "lucide-react";
+import { useOnlineStatus } from "../hooks/useOnlineStatus";
+import { House, Search, BookOpen, ClipboardList, RefreshCw, Image, X, Cloud, CloudOff } from "lucide-react";
 import gsap from "gsap";
 import { saveBackground, loadBackground, removeBackground, createBgUrl, type StoredBg } from "../utils/backgroundStore";
 import InstallPWA from "./InstallPWA";
@@ -88,6 +89,7 @@ function MobileNav({ items }: { items: typeof navItems }) {
 
 export default function Layout() {
   const { user, signOut } = useAuth();
+  const isOnline = useOnlineStatus();
   const navigate = useNavigate();
   const location = useLocation();
   const contentRef = useRef<HTMLDivElement>(null);
@@ -354,6 +356,11 @@ export default function Layout() {
               导入
             </button>
             <span className="text-xs text-gray-400 hidden lg:inline">{user?.email}</span>
+            {user?.provider === "supabase" && (
+              <span className="text-gray-400" title={isOnline ? "已连接云端" : "离线"}>
+                {isOnline ? <Cloud size={14} strokeWidth={1.5} /> : <CloudOff size={14} strokeWidth={1.5} />}
+              </span>
+            )}
             <button
               onClick={handleSignOut}
               className="bg-purple-100/70 hover:bg-purple-200/70 text-purple-600 px-3 py-1 rounded-lg transition-colors text-xs"
@@ -371,6 +378,11 @@ export default function Layout() {
         </Link>
         <div className="flex items-center gap-3">
           <InstallPWA />
+          {user?.provider === "supabase" && (
+            <span className="text-gray-400" title={isOnline ? "已连接云端" : "离线"}>
+              {isOnline ? <Cloud size={16} strokeWidth={1.5} /> : <CloudOff size={16} strokeWidth={1.5} />}
+            </span>
+          )}
           <label className="cursor-pointer text-gray-400 active:text-purple-500 transition-colors" title="更换背景">
             <Image size={18} strokeWidth={1.5} />
             <input type="file" accept="image/*,video/*" onChange={handleBgUpload} className="hidden" />

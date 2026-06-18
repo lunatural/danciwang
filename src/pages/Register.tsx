@@ -7,6 +7,7 @@ export default function Register() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [loading, setLoading] = useState(false);
   const { signUp } = useAuth();
   const navigate = useNavigate();
 
@@ -18,12 +19,25 @@ export default function Register() {
       setError("密码至少6位");
       return;
     }
-    const err = await signUp(email, password);
-    if (err) {
-      setError(err.message || "注册失败");
-    } else {
-      setSuccess("注册成功！正在跳转...");
-      setTimeout(() => navigate("/"), 1000);
+    setLoading(true);
+    try {
+      const err = await signUp(email, password);
+      if (err) {
+        // If the message mentions "检查邮箱", it's not really an error
+        if (err.message && err.message.includes("检查邮箱")) {
+          setSuccess(err.message);
+          setTimeout(() => navigate("/login"), 3000);
+        } else {
+          setError(err.message || "注册失败");
+        }
+      } else {
+        setSuccess("注册成功！正在跳转...");
+        setTimeout(() => navigate("/"), 1000);
+      }
+    } catch {
+      setError("注册失败，请检查网络连接");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -41,7 +55,8 @@ export default function Register() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400 disabled:opacity-50"
           />
           <input
             type="password"
@@ -49,15 +64,17 @@ export default function Register() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400"
+            disabled={loading}
+            className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400 disabled:opacity-50"
           />
           {error && <p className="text-red-500 text-sm text-center">{error}</p>}
           {success && <p className="text-green-500 text-sm text-center">{success}</p>}
           <button
             type="submit"
-            className="w-full py-3 bg-purple-500 hover:bg-purple-600 text-white rounded-xl font-medium transition-colors"
+            disabled={loading}
+            className="w-full py-3 bg-purple-500 hover:bg-purple-600 disabled:bg-purple-300 text-white rounded-xl font-medium transition-colors"
           >
-            注册
+            {loading ? "注册中..." : "注册"}
           </button>
         </form>
         <p className="text-sm text-gray-500 text-center mt-4">
