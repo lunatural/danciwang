@@ -37,18 +37,41 @@ export function useAuth() {
         return;
       }
 
-      // Fall back to cached user in localStorage
-      const stored = localStorage.getItem("vocab_current_user");
-      if (stored && !cancelled) {
-        try {
-          const parsed = JSON.parse(stored) as AuthUser;
-          // Ensure provider field exists (backward compat)
-          if (!parsed.provider) {
-            parsed.provider = parsed.email === "游客" ? "guest" : "supabase";
+      // No active Supabase session — try to refresh it
+      let refreshed = false;
+      if (!session) {
+        const { data: refreshedData } = await supabase.auth.refreshSession();
+        if (refreshedData.session?.user && !cancelled) {
+          const su: AuthUser = {
+            id: refreshedData.session.user.id,
+            email: refreshedData.session.user.email || "",
+            provider: "supabase",
+          };
+          localStorage.setItem("vocab_current_user", JSON.stringify(su));
+          setUser(su);
+          refreshed = true;
+        }
+      }
+
+      // Fall back to cached user in localStorage (guest only)
+      if (!refreshed && !cancelled) {
+        const stored = localStorage.getItem("vocab_current_user");
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored) as AuthUser;
+            if (!parsed.provider) {
+              parsed.provider = parsed.email === "游客" ? "guest" : "supabase";
+            }
+            // Only accept guest cache — Supabase cache without valid session = expired
+            if (parsed.provider === "guest") {
+              setUser(parsed);
+            } else {
+              // Supabase session expired and can't refresh — clear cache, force re-login
+              localStorage.removeItem("vocab_current_user");
+            }
+          } catch {
+            // corrupted, ignore
           }
-          setUser(parsed);
-        } catch {
-          // corrupted, ignore
         }
       }
       if (!cancelled) setLoading(false);

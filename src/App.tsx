@@ -112,6 +112,32 @@ function Protected({ children }: { children: React.ReactNode }) {
     }
   }, [isOnline, user?.id, user?.provider]);
 
+  // Periodic sync: pull from cloud every 30 seconds
+  useEffect(() => {
+    if (!user || user.provider !== "supabase" || !isOnline) return;
+    const id = setInterval(async () => {
+      const cloud = await pullAllFromCloud(user.id);
+      if (cloud) mergeCloudIntoLocal(user.id, cloud);
+      setSyncVersion((v) => v + 1);
+    }, 30000);
+    return () => clearInterval(id);
+  }, [user?.id, user?.provider, isOnline]);
+
+  // Sync on tab focus
+  useEffect(() => {
+    if (!user || user.provider !== "supabase") return;
+    const onVisible = async () => {
+      if (document.visibilityState === "visible") {
+        const cloud = await pullAllFromCloud(user.id);
+        if (cloud) mergeCloudIntoLocal(user.id, cloud);
+        setSyncVersion((v) => v + 1);
+        flushSyncQueue(user.id).catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [user?.id, user?.provider]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-400">
