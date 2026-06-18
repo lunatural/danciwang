@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { useSyncVersion } from "../App";
 import { getLearningWords, getWords, moveToReview } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
@@ -31,6 +32,7 @@ function sortWords(words: string[], mode: SortMode): string[] {
 
 export default function Learn() {
   const { user } = useAuth();
+  const syncVersion = useSyncVersion();
   const navigate = useNavigate();
   const [allLearningWords, setAllLearningWords] = useState<string[]>([]);
   const [originalWords, setOriginalWords] = useState<string[]>([]);
@@ -89,7 +91,7 @@ export default function Learn() {
     if (filtered.length > 0) {
       loadWord(filtered[0]);
     }
-  }, [user]);
+  }, [user, syncVersion]);
 
   const changeGroup = (group: string) => {
     setGroupFilter(group);

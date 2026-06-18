@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { useSyncVersion } from "../App";
 import { getWords, getLearningWords, getReviewSchedule } from "../hooks/useData";
 import { getTodayActivity } from "../utils/dailyActivity";
 import ShareButton from "../components/ShareButton";
@@ -30,6 +31,7 @@ function AnimatedNumber({ target, duration = 1.2 }: { target: number; duration?:
 
 export default function Home() {
   const { user } = useAuth();
+  const syncVersion = useSyncVersion();
   const [wordCount, setWordCount] = useState(0);
   const [learningCount, setLearningCount] = useState(0);
   const [dueCount, setDueCount] = useState(0);
@@ -56,7 +58,7 @@ export default function Home() {
     const activity = getTodayActivity(user.id);
     setTodayStats({ learnedCount: activity.learnedCount, reviewedCount: activity.reviewedCount });
     setShowAnimated(true);
-  }, [user]);
+  }, [user, syncVersion]);
 
   useEffect(() => {
     if (!containerRef.current || !showAnimated) return;

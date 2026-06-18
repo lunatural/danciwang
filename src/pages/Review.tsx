@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useAuth } from "../hooks/useAuth";
+import { useSyncVersion } from "../App";
 import { useLocation } from "react-router-dom";
 import { getReviewSchedule, getWords, updateReviewSchedule } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
@@ -19,6 +20,7 @@ interface ReviewWord {
 
 export default function Review() {
   const { user } = useAuth();
+  const syncVersion = useSyncVersion();
   const [allDueWords, setAllDueWords] = useState<ReviewWord[]>([]);
   const [dueWords, setDueWords] = useState<ReviewWord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -79,7 +81,7 @@ export default function Review() {
     setAllScheduled(scheduled);
 
     setLoading(false);
-  }, [user]);
+  }, [user, syncVersion]);
 
   const changeGroup = (group: string) => {
     setGroupFilter(group);

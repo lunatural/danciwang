@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
+import { useSyncVersion } from "../App";
 import { getWords, addWord, addToLearning, removeWord, removeGroup, getReviewSchedule, removeReviewSchedule, batchImportWords } from "../hooks/useData";
 import { getVocabLists, getVocabList } from "../utils/api";
 import { ChevronDown, ChevronRight, Upload, Database } from "lucide-react";
@@ -7,6 +8,7 @@ import { importAnkiData, parseAnkiFile, getAnkiDecks, removeAllAnkiData, type An
 
 export default function WordList() {
   const { user } = useAuth();
+  const syncVersion = useSyncVersion();
   const [groups, setGroups] = useState<{ name: string; words: string[] }[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [showImport, setShowImport] = useState(false);
@@ -75,7 +77,7 @@ export default function WordList() {
 
   useEffect(() => {
     loadWords();
-  }, [user]);
+  }, [user, syncVersion]);
 
   const handleRemoveWord = (word: string, group: string) => {
     if (!user) return;

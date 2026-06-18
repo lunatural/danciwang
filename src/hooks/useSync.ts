@@ -119,21 +119,32 @@ async function executeSyncOp(userId: string, op: SyncOperation): Promise<void> {
 // ── Words ──
 
 export async function pullWordsFromCloud(userId: string): Promise<WordEntry[]> {
-  const { data, error } = await supabase
-    .from("words")
-    .select("word, group, added_at")
-    .eq("user_id", userId)
-    .order("added_at", { ascending: false });
+  const all: WordEntry[] = [];
+  const limit = 1000;
+  let from = 0;
 
-  if (error) {
-    console.warn("pullWordsFromCloud error:", error.message);
-    return [];
+  while (true) {
+    const { data, error } = await supabase
+      .from("words")
+      .select("word, group, added_at")
+      .eq("user_id", userId)
+      .order("added_at", { ascending: false })
+      .range(from, from + limit - 1);
+
+    if (error) {
+      console.warn("pullWordsFromCloud error:", error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    for (const r of data as { word: string; group: string; added_at: string }[]) {
+      all.push({ word: r.word, group: r.group, addedAt: r.added_at });
+    }
+    if (data.length < limit) break;
+    from += limit;
   }
-  return (data || []).map((r: { word: string; group: string; added_at: string }) => ({
-    word: r.word,
-    group: r.group,
-    addedAt: r.added_at,
-  }));
+
+  return all;
 }
 
 export async function upsertWordToCloud(userId: string, entry: WordEntry): Promise<void> {
@@ -164,16 +175,31 @@ export async function deleteGroupFromCloud(userId: string, group: string): Promi
 // ── Learning ──
 
 export async function pullLearningFromCloud(userId: string): Promise<string[]> {
-  const { data, error } = await supabase
-    .from("learning")
-    .select("word")
-    .eq("user_id", userId);
+  const all: string[] = [];
+  const limit = 1000;
+  let from = 0;
 
-  if (error) {
-    console.warn("pullLearningFromCloud error:", error.message);
-    return [];
+  while (true) {
+    const { data, error } = await supabase
+      .from("learning")
+      .select("word")
+      .eq("user_id", userId)
+      .range(from, from + limit - 1);
+
+    if (error) {
+      console.warn("pullLearningFromCloud error:", error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    for (const r of data as { word: string }[]) {
+      all.push(r.word);
+    }
+    if (data.length < limit) break;
+    from += limit;
   }
-  return (data || []).map((r: { word: string }) => r.word);
+
+  return all;
 }
 
 export async function upsertLearningToCloud(userId: string, word: string): Promise<void> {
@@ -195,29 +221,44 @@ export async function removeLearningFromCloud(userId: string, word: string): Pro
 // ── Review Schedule ──
 
 export async function pullScheduleFromCloud(userId: string): Promise<ReviewSchedule[]> {
-  const { data, error } = await supabase
-    .from("review_schedule")
-    .select("id, word, ease_factor, interval_days, repetitions, next_review_at, last_review_at")
-    .eq("user_id", userId);
+  const all: ReviewSchedule[] = [];
+  const limit = 1000;
+  let from = 0;
 
-  if (error) {
-    console.warn("pullScheduleFromCloud error:", error.message);
-    return [];
+  while (true) {
+    const { data, error } = await supabase
+      .from("review_schedule")
+      .select("id, word, ease_factor, interval_days, repetitions, next_review_at, last_review_at")
+      .eq("user_id", userId)
+      .range(from, from + limit - 1);
+
+    if (error) {
+      console.warn("pullScheduleFromCloud error:", error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    for (const r of data as {
+      id: string; word: string; ease_factor: number;
+      interval_days: number; repetitions: number;
+      next_review_at: string; last_review_at: string;
+    }[]) {
+      all.push({
+        id: r.id,
+        userId,
+        word: r.word,
+        easeFactor: r.ease_factor,
+        intervalDays: r.interval_days,
+        repetitions: r.repetitions,
+        nextReviewAt: r.next_review_at,
+        lastReviewAt: r.last_review_at,
+      });
+    }
+    if (data.length < limit) break;
+    from += limit;
   }
-  return (data || []).map((r: {
-    id: string; word: string; ease_factor: number;
-    interval_days: number; repetitions: number;
-    next_review_at: string; last_review_at: string;
-  }) => ({
-    id: r.id,
-    userId,
-    word: r.word,
-    easeFactor: r.ease_factor,
-    intervalDays: r.interval_days,
-    repetitions: r.repetitions,
-    nextReviewAt: r.next_review_at,
-    lastReviewAt: r.last_review_at,
-  }));
+
+  return all;
 }
 
 export async function upsertScheduleToCloud(userId: string, item: ReviewSchedule): Promise<void> {
