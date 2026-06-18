@@ -349,6 +349,11 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
   const merged = [...localOnly, ...cloud.words];
   localStorage.setItem(`vocab_words_${userId}`, JSON.stringify(merged));
 
+  // Push local-only words to cloud (fire-and-forget)
+  if (localOnly.length > 0) {
+    pushWordsToCloud(userId, localOnly).catch(() => {});
+  }
+
   // ── Learning ──
   const localLearningRaw = localStorage.getItem(`vocab_learning_${userId}`);
   const localLearning: string[] = localLearningRaw ? JSON.parse(localLearningRaw) : [];
@@ -363,6 +368,17 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
   const localOnlySchedule = localSchedule.filter((ls) => !cloudScheduleWords.has(ls.word));
   const scheduleMerged = [...localOnlySchedule, ...cloud.schedule];
   localStorage.setItem(`vocab_schedule_${userId}`, JSON.stringify(scheduleMerged));
+
+  // Push local-only schedules to cloud (fire-and-forget)
+  if (localOnlySchedule.length > 0) {
+    pushScheduleToCloud(userId, localOnlySchedule).catch(() => {});
+  }
+
+  // Also push local-only learning to cloud
+  const localOnlyLearning = localLearning.filter((lw) => !cloudLearningSet.has(lw));
+  if (localOnlyLearning.length > 0) {
+    pushLearningToCloud(userId, localOnlyLearning).catch(() => {});
+  }
 }
 
 export async function pushWordsToCloud(
