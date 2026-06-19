@@ -2,12 +2,12 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
-import { getLearningWords, getWords, moveToReview, removeFromLearning } from "../hooks/useData";
+import { getLearningWords, getWords, moveToReview } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
 import { searchLocalDict } from "../utils/localDict";
 import ClickableText from "../components/ClickableText";
-import { BookOpen, Check, SkipForward } from "lucide-react";
+import { BookOpen, Check, ArrowLeft } from "lucide-react";
 import gsap from "gsap";
 
 type SortMode = "default" | "random" | "az" | "za";
@@ -48,6 +48,8 @@ export default function Learn() {
   const [availableGroups, setAvailableGroups] = useState<string[]>([]);
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [historyStack, setHistoryStack] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
   // Word data cache for instant switching
   const wordCache = useRef<Map<string, { data: WordData; examples: ExampleSentence[] }>>(new Map());
   const prefetching = useRef<Set<string>>(new Set());
@@ -253,9 +255,13 @@ export default function Learn() {
     e.currentTarget.style.transform = "rotateY(0deg) rotateX(0deg)";
   };
 
+  const isReviewMode = historyIndex >= 0;
+  const historyWord = isReviewMode ? historyStack[historyIndex] : null;
+
   const handleLearned = () => {
-    if (!user || words.length === 0) return;
+    if (!user || words.length === 0 || isReviewMode) return;
     const word = words[currentIndex];
+    setHistoryStack((s) => [...s, word]);
     moveToReview(user.id, word);
     incrementDailyCount(user.id, "learnedCount");
     setAllLearningWords((prev) => prev.filter((w) => w !== word));
@@ -272,22 +278,20 @@ export default function Learn() {
     loadWord(remaining[nextIndex]);
   };
 
-  const handleSkip = () => {
-    if (!user || words.length === 0) return;
-    const word = words[currentIndex];
-    removeFromLearning(user.id, word);
-    setAllLearningWords((prev) => prev.filter((w) => w !== word));
-    const remainingOriginal = originalWords.filter((w) => w !== word);
-    setOriginalWords(remainingOriginal);
-    const remaining = words.filter((_, i) => i !== currentIndex);
-    setWords(remaining);
-    if (remaining.length === 0) {
-      setWordData(null);
-      return;
+  const handlePrevious = () => {
+    if (historyStack.length === 0) return;
+    // If already reviewing, go further back; otherwise start from the end
+    const newIdx = isReviewMode ? historyIndex - 1 : historyStack.length - 1;
+    if (newIdx < 0) return;
+    setHistoryIndex(newIdx);
+    loadWord(historyStack[newIdx]);
+  };
+
+  const handleBackToLearning = () => {
+    setHistoryIndex(-1);
+    if (words.length > 0) {
+      loadWord(words[currentIndex]);
     }
-    const nextIndex = currentIndex >= remaining.length ? 0 : currentIndex;
-    setCurrentIndex(nextIndex);
-    loadWord(remaining[nextIndex]);
   };
 
   const sortOptions: { value: SortMode; label: string }[] = [
@@ -400,7 +404,9 @@ export default function Learn() {
               />
             </div>
             <p className="text-center text-gray-400 text-xs mt-1.5">
-              还剩 {words.length} 个单词待学习
+              {isReviewMode
+                ? "正在回看已学单词"
+                : `还剩 ${words.length} 个单词待学习`}
             </p>
           </div>
 
@@ -494,19 +500,29 @@ export default function Learn() {
 
               <div className="flex justify-center gap-3 pt-2 sm:pt-4">
                 <button
-                  onClick={handleSkip}
-                  className="px-4 sm:px-6 py-2.5 sm:py-3 bg-gray-300/60 backdrop-blur-sm hover:bg-gray-300/80 text-gray-600 rounded-xl font-medium text-sm sm:text-base transition-all border border-white/30 inline-flex items-center gap-2"
+                  onClick={handlePrevious}
+                  disabled={isReviewMode ? historyIndex <= 0 : historyStack.length === 0}
+                  className="px-4 sm:px-6 py-2.5 sm:py-3 bg-gray-300/60 backdrop-blur-sm hover:bg-gray-300/80 disabled:bg-gray-200/30 disabled:text-gray-300 text-gray-600 rounded-xl font-medium text-sm sm:text-base transition-all border border-white/30 inline-flex items-center gap-2"
                 >
-                  <SkipForward size={18} strokeWidth={2} />
-                  跳过
+                  <ArrowLeft size={18} strokeWidth={2} />
+                  上一个
                 </button>
-                <button
-                  onClick={handleLearned}
-                  className="px-6 sm:px-8 py-2.5 sm:py-3 bg-green-400/70 backdrop-blur-sm hover:bg-green-400/85 text-white rounded-xl font-medium text-base sm:text-lg transition-all border border-white/30 inline-flex items-center gap-2"
-                >
-                  <Check size={20} strokeWidth={2} />
-                  我学会了
-                </button>
+                {isReviewMode ? (
+                  <button
+                    onClick={handleBackToLearning}
+                    className="px-6 sm:px-8 py-2.5 sm:py-3 bg-purple-400/70 backdrop-blur-sm hover:bg-purple-400/85 text-white rounded-xl font-medium text-base sm:text-lg transition-all border border-white/30 inline-flex items-center gap-2"
+                  >
+                    返回学习
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleLearned}
+                    className="px-6 sm:px-8 py-2.5 sm:py-3 bg-green-400/70 backdrop-blur-sm hover:bg-green-400/85 text-white rounded-xl font-medium text-base sm:text-lg transition-all border border-white/30 inline-flex items-center gap-2"
+                  >
+                    <Check size={20} strokeWidth={2} />
+                    我学会了
+                  </button>
+                )}
               </div>
                 </div>
               </div>

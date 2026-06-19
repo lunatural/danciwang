@@ -1,21 +1,27 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
 import { useLocation } from "react-router-dom";
 import { getReviewSchedule, getWords, updateReviewSchedule } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
-import { fetchWord, fetchExampleSentences, type WordData, type ExampleSentence } from "../utils/api";
+import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
 import { calculateNextReview } from "../utils/sm2";
 import FlashCard from "../components/FlashCard";
 import RatingButtons from "../components/RatingButtons";
+import QuizChoice from "../components/QuizChoice";
+import QuizSpell from "../components/QuizSpell";
+import ReviewResult from "../components/ReviewResult";
 import { WordTooltip } from "../components/WordTooltip";
 import { PartyPopper } from "lucide-react";
+
+type QuizMode = "choice" | "spell" | "flashcard";
 
 interface ReviewWord {
   scheduleId: string;
   word: string;
   data: WordData | null;
   examples: ExampleSentence[];
+  mode: QuizMode;
 }
 
 export default function Review() {
@@ -24,20 +30,27 @@ export default function Review() {
   const [allDueWords, setAllDueWords] = useState<ReviewWord[]>([]);
   const [dueWords, setDueWords] = useState<ReviewWord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [flipped, setFlipped] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [loadingWord, setLoadingWord] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [groupFilter, setGroupFilter] = useState("全部");
   const [availableGroups, setAvailableGroups] = useState<string[]>([]);
   const [allScheduled, setAllScheduled] = useState<{ id: string; word: string; group: string; nextReviewAt: string; intervalDays: number; repetitions: number }[]>([]);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [tooltip, setTooltip] = useState<{ word: string; anchor: DOMRect } | null>(null);
+  const [loadingWord, setLoadingWord] = useState(false);
+  const [flipped, setFlipped] = useState(false);
+  const startTimeRef = useRef(Date.now());
+  const resultsRef = useRef<{ word: string; correct: boolean }[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const dueWordsRef = useRef<ReviewWord[]>([]);
+  dueWordsRef.current = dueWords;
+  const fetchGenRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
   const location = useLocation();
   const navigateFrom = location.pathname + location.search;
 
-  // Track fetch generation to cancel stale requests
-  const fetchGenRef = useRef(0);
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Chinese translations cache for distractors
+  const cnCache = useRef<Map<string, string>>(new Map());
 
   const wordGroupMap = new Map<string, string>();
   if (user) {
@@ -51,12 +64,29 @@ export default function Review() {
     return ws.filter((w) => wordGroupMap.get(w.word) === group);
   };
 
+  // Assign modes in rotation
+  function assignMode(i: number): QuizMode {
+    const modes: QuizMode[] = ["choice", "spell", "flashcard"];
+    return modes[i % 3];
+  }
+
   useEffect(() => {
     if (!user) return;
     const schedule = getReviewSchedule(user.id);
     const now = new Date().toISOString();
     const due = schedule.filter((s) => s.nextReviewAt <= now);
-    const reviewWords = due.map((s) => ({ scheduleId: s.id, word: s.word, data: null, examples: [] as ExampleSentence[] }));
+
+    const oldDataMap = new Map(dueWordsRef.current.map((w) => [w.word, { data: w.data, examples: w.examples }]));
+    const reviewWords = due.map((s, i) => {
+      const old = oldDataMap.get(s.word);
+      return {
+        scheduleId: s.id,
+        word: s.word,
+        data: old?.data || null,
+        examples: old?.examples || [],
+        mode: assignMode(i),
+      };
+    });
     setAllDueWords(reviewWords);
 
     const groups = new Set<string>();
@@ -68,7 +98,6 @@ export default function Review() {
     const filtered = filterByGroup(reviewWords, groupFilter);
     setDueWords(filtered);
 
-    // All scheduled words (including future ones) for review history
     const scheduled = schedule.map((s) => ({
       id: s.id,
       word: s.word,
@@ -90,24 +119,8 @@ export default function Review() {
     setCurrentIndex(0);
     setFlipped(false);
     setLoadingWord(false);
+    if (abortRef.current) abortRef.current.abort();
     fetchGenRef.current += 1;
-  };
-
-  // Scroll to top when word index changes
-  useEffect(() => {
-    containerRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
-  }, [currentIndex]);
-
-  const tiltCard = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = e.currentTarget;
-    const { left, top, width, height } = el.getBoundingClientRect();
-    const x = (e.clientX - left - width / 2) / 20;
-    const y = (e.clientY - top - height / 2) / 20;
-    el.style.transform = `rotateY(${x}deg) rotateX(${-y}deg)`;
-  };
-
-  const tiltReset = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.currentTarget.style.transform = "rotateY(0deg) rotateX(0deg)";
   };
 
   // Load word data for current index
@@ -117,29 +130,85 @@ export default function Review() {
       return;
     }
     const word = dueWords[currentIndex];
-    if (word.data) return;
+    if (word.data) {
+      setLoadingWord(false);
+      return;
+    }
 
-    setFlipped(false);
     setLoadingWord(true);
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     const gen = ++fetchGenRef.current;
     const idx = currentIndex;
+    const w = word.word;
+
+    const timeout = setTimeout(() => {
+      if (gen === fetchGenRef.current) {
+        setDueWords((prev) => {
+          if (idx >= prev.length) return prev;
+          const u = [...prev];
+          u[idx] = { ...u[idx], data: null, examples: [] };
+          return u;
+        });
+        setLoadingWord(false);
+      }
+    }, 20000);
+
     Promise.all([
-      fetchWord(word.word),
-      fetchExampleSentences(word.word),
-    ]).then(([data, exs]) => {
+      fetchWord(w),
+      fetchExampleSentences(w),
+    ]).then(async ([data, exs]) => {
+      clearTimeout(timeout);
       if (gen !== fetchGenRef.current) return;
+      // Pre-cache Chinese translation for distractor use
+      if (data && !cnCache.current.has(w)) {
+        const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
+        if (cn) cnCache.current.set(w, cn);
+      }
       setDueWords((prev) => {
         if (idx >= prev.length) return prev;
-        const updated = [...prev];
-        updated[idx] = { ...updated[idx], data, examples: exs };
-        return updated;
+        const u = [...prev];
+        u[idx] = { ...u[idx], data, examples: exs };
+        return u;
       });
       setLoadingWord(false);
     }).catch(() => {
+      clearTimeout(timeout);
       if (gen === fetchGenRef.current) setLoadingWord(false);
     });
+
+    return () => { clearTimeout(timeout); controller.abort(); };
   }, [currentIndex, dueWords.length]);
+
+  // Preload next word data
+  useEffect(() => {
+    if (dueWords.length === 0 || currentIndex + 1 >= dueWords.length) return;
+    const next = dueWords[currentIndex + 1];
+    if (next.data) return;
+    Promise.all([
+      fetchWord(next.word),
+      fetchExampleSentences(next.word),
+    ]).then(async ([data, exs]) => {
+      if (data && !cnCache.current.has(next.word)) {
+        const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
+        if (cn) cnCache.current.set(next.word, cn);
+      }
+      setDueWords((prev) => {
+        const idx = currentIndex + 1;
+        if (idx >= prev.length) return prev;
+        const u = [...prev];
+        u[idx] = { ...u[idx], data, examples: exs };
+        return u;
+      });
+    }).catch(() => {});
+  }, [currentIndex, dueWords.length]);
+
+  // Scroll to top when word index changes
+  useEffect(() => {
+    containerRef.current?.scrollIntoView({ behavior: "instant", block: "start" });
+  }, [currentIndex]);
 
   const handleRate = (rating: "forgot" | "hard" | "good") => {
     if (!user) return;
@@ -152,33 +221,89 @@ export default function Review() {
     updateReviewSchedule(user.id, current.scheduleId, updated);
     incrementDailyCount(user.id, "reviewedCount");
 
-    // Update allScheduled for the rated word
-    const nextDate = updated.nextReviewAt || new Date(Date.now() + (updated.intervalDays || 1) * 86400000).toISOString();
-    setAllScheduled((prev) => {
-      const mapped = prev.map((s) =>
-        s.id === current.scheduleId
-          ? { ...s, nextReviewAt: nextDate, intervalDays: updated.intervalDays || 1, repetitions: updated.repetitions || (item.repetitions + 1) }
-          : s
-      );
-      mapped.sort((a, b) => new Date(a.nextReviewAt).getTime() - new Date(b.nextReviewAt).getTime());
-      return mapped;
-    });
+    resultsRef.current.push({ word: current.word, correct: rating === "good" });
+    advanceWord();
+  };
 
+  const handleQuizResult = (correct: boolean) => {
+    if (!user) return;
+    const current = dueWords[currentIndex];
+    const schedule = getReviewSchedule(user.id);
+    const item = schedule.find((s) => s.id === current.scheduleId);
+    if (!item) return;
+
+    const rating = correct ? "good" : (current.mode === "spell" ? "hard" : "forgot");
+    const updated = calculateNextReview(item, rating);
+    updateReviewSchedule(user.id, current.scheduleId, updated);
+    incrementDailyCount(user.id, "reviewedCount");
+
+    resultsRef.current.push({ word: current.word, correct });
+    advanceWord();
+  };
+
+  const advanceWord = () => {
     setFlipped(false);
     if (currentIndex < dueWords.length - 1) {
       setCurrentIndex((i) => i + 1);
     } else {
-      setDueWords([]);
+      setCompleted(true);
     }
   };
 
+  const handleRestart = () => {
+    setCompleted(false);
+    setCurrentIndex(0);
+    setDueWords([]);
+    setLoading(true);
+    resultsRef.current = [];
+    // Trigger reload via syncVersion dependency reset
+    startTimeRef.current = Date.now();
+    // Force reload
+    const schedule = getReviewSchedule(user!.id);
+    const now = new Date().toISOString();
+    const due = schedule.filter((s) => s.nextReviewAt <= now);
+    const reviewWords = due.map((s, i) => ({
+      scheduleId: s.id,
+      word: s.word,
+      data: null as WordData | null,
+      examples: [] as ExampleSentence[],
+      mode: assignMode(i),
+    }));
+    setAllDueWords(reviewWords);
+    const filtered = filterByGroup(reviewWords, groupFilter);
+    setDueWords(filtered);
+    setLoading(false);
+  };
+
   if (loading) {
+    return <div className="text-center text-gray-400 py-10 text-sm">加载中...</div>;
+  }
+
+  if (completed) {
+    const total = resultsRef.current.length;
+    const correct = resultsRef.current.filter((r) => r.correct).length;
+    const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
     return (
-      <div className="text-center text-gray-400 py-10 text-sm">加载中...</div>
+      <ReviewResult
+        total={total}
+        correct={correct}
+        duration={duration}
+        onRestart={handleRestart}
+      />
     );
   }
 
   const current = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
+
+  // Build distractor list from other due words' cached Chinese translations
+  const distractors = useMemo(() => {
+    if (!current || current.mode !== "choice") return [];
+    return dueWords
+      .filter((w) => w.word !== current.word)
+      .map((w) => cnCache.current.get(w.word) || "")
+      .filter((c) => c.length > 0)
+      .slice(0, 5);
+  }, [currentIndex, dueWords.length]);
 
   function renderDaysLabel(nextReviewAt: string) {
     const now = new Date();
@@ -245,9 +370,7 @@ export default function Review() {
 
           {dueWords.length === 0 ? (
             <div className="text-center py-12 sm:py-16">
-              <p className="text-base sm:text-xl text-gray-600 font-medium">
-                当前分组没有需要复习的单词
-              </p>
+              <p className="text-base sm:text-xl text-gray-600 font-medium">当前分组没有需要复习的单词</p>
               <button
                 onClick={() => changeGroup("全部")}
                 className="mt-4 px-5 py-2 bg-purple-500/80 backdrop-blur-sm text-white rounded-xl hover:bg-purple-500/90 transition-all text-sm border border-white/30"
@@ -264,45 +387,59 @@ export default function Review() {
                     style={{ width: `${(currentIndex / Math.max(dueWords.length, 1)) * 100}%` }}
                   />
                 </div>
-                <p className="text-center text-gray-400 text-xs mt-1.5">
-                  今日剩余 {dueWords.length - currentIndex} 个单词待复习
-                </p>
+                <div className="flex justify-between text-xs text-gray-400 mt-1.5">
+                  <span>
+                    {current?.mode === "choice" ? "选择题" : current?.mode === "spell" ? "拼写题" : "闪卡"}
+                  </span>
+                  <span>今日剩余 {dueWords.length - currentIndex} 个</span>
+                </div>
               </div>
 
-              {loadingWord || !current?.data ? (
-                <div className="text-center text-gray-400 py-16 sm:py-20 text-sm">
-                  加载单词中...
-                </div>
-              ) : (
-                <div key={current.word} style={{ perspective: "1000px" }}>
-                  <div
-                    onMouseMove={tiltCard}
-                    onMouseLeave={tiltReset}
-                    className="transition-[transform] duration-200 ease-linear"
-                    style={{ transformStyle: "preserve-3d" }}
-                  >
-                    <FlashCard
+              {loadingWord ? (
+                <div className="text-center text-gray-400 py-16 sm:py-20 text-sm">加载单词中...</div>
+              ) : current?.data ? (
+                <>
+                  {current.mode === "choice" && (
+                    <QuizChoice
+                      key={current.word + currentIndex}
                       data={current.data}
-                      flipped={flipped}
-                      onClick={() => setFlipped(!flipped)}
-                      examples={current.examples}
+                      distractors={distractors}
+                      onResult={handleQuizResult}
                     />
-                    {flipped && <RatingButtons onRate={handleRate} />}
-                  </div>
-                </div>
+                  )}
+                  {current.mode === "spell" && (
+                    <QuizSpell
+                      key={current.word + currentIndex}
+                      data={current.data}
+                      examples={current.examples}
+                      onResult={handleQuizResult}
+                    />
+                  )}
+                  {current.mode === "flashcard" && (
+                    <div key={current.word + currentIndex} style={{ perspective: "1000px" }}>
+                      <FlashCard
+                        data={current.data}
+                        flipped={flipped}
+                        onClick={() => setFlipped(!flipped)}
+                        examples={current.examples}
+                      />
+                      {flipped && <RatingButtons onRate={handleRate} />}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-center text-gray-400 py-16 sm:py-20 text-sm">加载单词中...</div>
               )}
             </>
           )}
         </>
       )}
 
-      {/* Review history — stacked cards */}
+      {/* Review history */}
       {allScheduled.length > 0 && (
         <div className="glass rounded-2xl p-4 sm:p-6">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base sm:text-lg font-semibold text-purple-700">
-              复习记录
-            </h2>
+            <h2 className="text-base sm:text-lg font-semibold text-purple-700">复习记录</h2>
             <span className="text-xs text-gray-400 bg-white/50 px-2 py-0.5 rounded-full">
               {allScheduled.length} 个单词
             </span>
@@ -317,15 +454,11 @@ export default function Review() {
           >
             {allScheduled.map((item, i) => {
               const { text, color } = renderDaysLabel(item.nextReviewAt);
-              const urgencyColor = text === "现在"
-                ? "#ef4444"
-                : text.endsWith("小时后")
-                  ? "#f97316"
-                  : text === "明天"
-                    ? "#d97706"
-                    : text.match(/^\d天后$/) && parseInt(text) <= 3
-                      ? "#ca8a04"
-                      : "#22c55e";
+              const urgencyColor = text === "现在" ? "#ef4444"
+                : text.endsWith("小时后") ? "#f97316"
+                : text === "明天" ? "#d97706"
+                : text.match(/^\d天后$/) && parseInt(text) <= 3 ? "#ca8a04"
+                : "#22c55e";
 
               let stackStyle: React.CSSProperties = {};
               if (!historyExpanded) {
@@ -356,7 +489,6 @@ export default function Review() {
                     ...stackStyle,
                   }}
                 >
-                  {/* Left accent bar */}
                   <span
                     className="absolute left-0 top-3 bottom-3 w-1 rounded-full"
                     style={{ backgroundColor: urgencyColor }}
@@ -377,9 +509,7 @@ export default function Review() {
                     <span className="text-[10px] sm:text-xs text-gray-400">
                       {new Date(item.nextReviewAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}
                     </span>
-                    <span className={`text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>
-                      {text}
-                    </span>
+                    <span className={`text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-medium ${color}`}>{text}</span>
                     <span className="text-[10px] text-gray-300 hidden sm:inline">
                       间隔{item.intervalDays}天·第{item.repetitions}次
                     </span>
@@ -394,9 +524,7 @@ export default function Review() {
               <button
                 onClick={() => setHistoryExpanded(!historyExpanded)}
                 className="relative px-8 py-2 bg-white rounded-2xl shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all text-sm font-semibold text-gray-600 border-0 cursor-pointer"
-                style={{
-                  boxShadow: "0px 3px 3.5px rgba(119, 113, 113, 0.3)",
-                }}
+                style={{ boxShadow: "0px 3px 3.5px rgba(119, 113, 113, 0.3)" }}
               >
                 {historyExpanded ? "收起" : "展开全部"}
                 <span
