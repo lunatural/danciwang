@@ -15,6 +15,14 @@ import { WordTooltip } from "../components/WordTooltip";
 import { PartyPopper } from "lucide-react";
 
 type QuizMode = "choice" | "spell" | "flashcard";
+type ReviewMode = "mixed" | QuizMode;
+
+const modeLabels: Record<ReviewMode, string> = {
+  mixed: "混合",
+  choice: "选择",
+  spell: "拼写",
+  flashcard: "闪卡",
+};
 
 interface ReviewWord {
   scheduleId: string;
@@ -32,6 +40,7 @@ export default function Review() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [completed, setCompleted] = useState(false);
+  const [reviewMode, setReviewMode] = useState<ReviewMode>("mixed");
   const [groupFilter, setGroupFilter] = useState("全部");
   const [availableGroups, setAvailableGroups] = useState<string[]>([]);
   const [allScheduled, setAllScheduled] = useState<{ id: string; word: string; group: string; nextReviewAt: string; intervalDays: number; repetitions: number }[]>([]);
@@ -64,8 +73,9 @@ export default function Review() {
     return ws.filter((w) => wordGroupMap.get(w.word) === group);
   };
 
-  // Assign modes in rotation
+  // Assign modes based on selection (mixed = rotation, otherwise all same)
   function assignMode(i: number): QuizMode {
+    if (reviewMode !== "mixed") return reviewMode;
     const modes: QuizMode[] = ["choice", "spell", "flashcard"];
     return modes[i % 3];
   }
@@ -110,7 +120,7 @@ export default function Review() {
     setAllScheduled(scheduled);
 
     setLoading(false);
-  }, [user, syncVersion]);
+  }, [user, syncVersion, reviewMode]);
 
   const changeGroup = (group: string) => {
     setGroupFilter(group);
@@ -328,6 +338,23 @@ export default function Review() {
         </div>
       ) : (
         <>
+          {/* Mode switcher */}
+          <div className="flex gap-1.5 sm:gap-2 flex-wrap">
+            {(Object.keys(modeLabels) as ReviewMode[]).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setReviewMode(mode)}
+                className={`px-3 sm:px-4 py-1 sm:py-1.5 rounded-full text-xs sm:text-sm font-medium transition-all ${
+                  reviewMode === mode
+                    ? "bg-purple-500/80 backdrop-blur-sm text-white"
+                    : "bg-white/50 backdrop-blur-sm text-purple-600 border border-white/40 hover:bg-white/70"
+                }`}
+              >
+                {modeLabels[mode]}
+              </button>
+            ))}
+          </div>
+
           {availableGroups.length > 0 && (
             <div className="flex gap-1.5 sm:gap-2 flex-wrap">
               <button
