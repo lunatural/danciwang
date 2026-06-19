@@ -313,20 +313,80 @@ export async function removeScheduleFromCloud(userId: string, id: string): Promi
 
 // ── Batch Pull / Push ──────────────────────────────────────────────
 
+export interface DailyActivityEntry {
+  date: string;
+  learnedCount: number;
+  reviewedCount: number;
+}
+
 export interface CloudData {
   words: WordEntry[];
   learning: string[];
   schedule: ReviewSchedule[];
+  dailyHistory: DailyActivityEntry[];
+}
+
+// ── Daily Activity ─────────────────────────────────────────────────
+
+export async function pullDailyHistoryFromCloud(userId: string): Promise<DailyActivityEntry[]> {
+  const all: DailyActivityEntry[] = [];
+  const limit = 1000;
+  let from = 0;
+
+  while (true) {
+    const { data, error } = await supabase
+      .from("daily_activity")
+      .select("date, learned_count, reviewed_count")
+      .eq("user_id", userId)
+      .order("date", { ascending: false })
+      .range(from, from + limit - 1);
+
+    if (error) {
+      console.warn("pullDailyHistory error:", error.message);
+      break;
+    }
+    if (!data || data.length === 0) break;
+
+    for (const r of data as { date: string; learned_count: number; reviewed_count: number }[]) {
+      all.push({ date: r.date, learnedCount: r.learned_count, reviewedCount: r.reviewed_count });
+    }
+    if (data.length < limit) break;
+    from += limit;
+  }
+
+  return all;
+}
+
+export async function pushDailyHistoryToCloud(
+  userId: string,
+  history: DailyActivityEntry[]
+): Promise<void> {
+  const rows = history.map((h) => ({
+    user_id: userId,
+    date: h.date,
+    learned_count: h.learnedCount,
+    reviewed_count: h.reviewedCount,
+  }));
+
+  const chunkSize = 100;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const { error } = await supabase.from("daily_activity").upsert(chunk, {
+      onConflict: "user_id, date",
+    });
+    if (error) console.warn("pushDailyHistory error:", error.message);
+  }
 }
 
 export async function pullAllFromCloud(userId: string): Promise<CloudData | null> {
   try {
-    const [words, learning, schedule] = await Promise.all([
+    const [words, learning, schedule, dailyHistory] = await Promise.all([
       pullWordsFromCloud(userId),
       pullLearningFromCloud(userId),
       pullScheduleFromCloud(userId),
+      pullDailyHistoryFromCloud(userId),
     ]);
-    return { words, learning, schedule };
+    return { words, learning, schedule, dailyHistory };
   } catch (err) {
     console.warn("pullAllFromCloud failed:", err);
     return null;
@@ -370,6 +430,21 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
   const localOnlySchedule = localSchedule.filter((ls) => !cloudScheduleWords.has(ls.word));
   const scheduleMerged = [...localOnlySchedule, ...cloud.schedule];
   localStorage.setItem(`vocab_schedule_${userId}`, JSON.stringify(scheduleMerged));
+
+  // ── Daily History ── (merge: cloud entries win on same date)
+  const localHistoryRaw = localStorage.getItem(`vocab_daily_history_${userId}`);
+  const localHistory: DailyActivityEntry[] = localHistoryRaw ? JSON.parse(localHistoryRaw) : [];
+  const cloudHistoryDates = new Set(cloud.dailyHistory.map((h) => h.date));
+  const localOnlyHistory = localHistory.filter((h) => !cloudHistoryDates.has(h.date));
+  const historyMerged = [...localOnlyHistory, ...cloud.dailyHistory].sort(
+    (a, b) => b.date.localeCompare(a.date)
+  );
+  localStorage.setItem(`vocab_daily_history_${userId}`, JSON.stringify(historyMerged));
+
+  // Push ALL local history to cloud (fire-and-forget) — ensures full sync
+  if (localHistory.length > 0) {
+    pushDailyHistoryToCloud(userId, localHistory).catch(() => {});
+  }
 
   // Push local-only schedules to cloud (fire-and-forget)
   if (localOnlySchedule.length > 0) {

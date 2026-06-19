@@ -56,4 +56,11 @@ export function incrementDailyCount(userId: string, field: "learnedCount" | "rev
   // Keep last 90 days
   if (history.length > 90) history.shift();
   localStorage.setItem(historyKey(userId), JSON.stringify(history));
+
+  // Push to cloud immediately if this is a Supabase user
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
+    import("../hooks/useSync").then(({ pushDailyHistoryToCloud }) => {
+      pushDailyHistoryToCloud(userId, [activity]).catch(() => {});
+    });
+  }
 }

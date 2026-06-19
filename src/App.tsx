@@ -9,7 +9,7 @@ import Search from "./pages/Search";
 import Learn from "./pages/Learn";
 import WordList from "./pages/WordList";
 import Review from "./pages/Review";
-import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal, pushWordsToCloud, pushLearningToCloud, pushScheduleToCloud } from "./hooks/useSync";
+import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal, pushWordsToCloud, pushLearningToCloud, pushScheduleToCloud, pushDailyHistoryToCloud } from "./hooks/useSync";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 
 // ── Sync Context ────────────────────────────────────────────────────
@@ -91,6 +91,17 @@ function Protected({ children }: { children: React.ReactNode }) {
             }
             if (localSchedule.length > cloud.schedule.length) {
               await pushScheduleToCloud(user.id, localSchedule).catch(() => {});
+            }
+
+            // Push daily history too
+            const localHistoryRaw = localStorage.getItem(`vocab_daily_history_${user.id}`);
+            if (localHistoryRaw) {
+              try {
+                const localHistory = JSON.parse(localHistoryRaw);
+                if (localHistory.length > (cloud.dailyHistory?.length || 0)) {
+                  await pushDailyHistoryToCloud(user.id, localHistory).catch(() => {});
+                }
+              } catch {}
             }
 
             // Mark full push done to avoid repeating
