@@ -192,27 +192,45 @@ export default function Review() {
     return () => { clearTimeout(timeout); controller.abort(); };
   }, [currentIndex, dueWords.length]);
 
-  // Preload next word data
+  // Preload next word + cache translations for distractors
   useEffect(() => {
-    if (dueWords.length === 0 || currentIndex + 1 >= dueWords.length) return;
-    const next = dueWords[currentIndex + 1];
-    if (next.data) return;
-    Promise.all([
-      fetchWord(next.word),
-      fetchExampleSentences(next.word),
-    ]).then(async ([data, exs]) => {
-      if (data && !cnCache.current.has(next.word)) {
-        const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
-        if (cn) cnCache.current.set(next.word, cn);
+    if (dueWords.length === 0) return;
+
+    // Preload next word data
+    if (currentIndex + 1 < dueWords.length) {
+      const next = dueWords[currentIndex + 1];
+      if (!next.data) {
+        Promise.all([
+          fetchWord(next.word),
+          fetchExampleSentences(next.word),
+        ]).then(async ([data, exs]) => {
+          if (data && !cnCache.current.has(next.word)) {
+            const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
+            if (cn) cnCache.current.set(next.word, cn);
+          }
+          setDueWords((prev) => {
+            const idx = currentIndex + 1;
+            if (idx >= prev.length) return prev;
+            const u = [...prev];
+            u[idx] = { ...u[idx], data, examples: exs };
+            return u;
+          });
+        }).catch(() => {});
       }
-      setDueWords((prev) => {
-        const idx = currentIndex + 1;
-        if (idx >= prev.length) return prev;
-        const u = [...prev];
-        u[idx] = { ...u[idx], data, examples: exs };
-        return u;
-      });
-    }).catch(() => {});
+    }
+
+    // Also cache translations for 5 nearby words to use as distractors
+    const unCached = dueWords
+      .filter((w, i) => i !== currentIndex && !cnCache.current.has(w.word))
+      .slice(0, 5);
+    for (const w of unCached) {
+      fetchWord(w.word).then(async (data) => {
+        if (data) {
+          const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
+          if (cn) cnCache.current.set(w.word, cn);
+        }
+      }).catch(() => {});
+    }
   }, [currentIndex, dueWords.length]);
 
   // Scroll to top when word index changes
@@ -285,14 +303,21 @@ export default function Review() {
     setLoading(false);
   };
 
-  // Build distractor list from other due words (MUST be before any early return for hook consistency)
+  // Build distractor list from other due words
   const distractors = useMemo(() => {
     const c = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
-    if (!c || c.mode !== "choice") return [];
+    if (!c || c.mode !== "choice") return [] as { word: string; translation: string }[];
     return dueWords
       .filter((w) => w.word !== c.word)
-      .map((w) => cnCache.current.get(w.word) || "")
-      .filter((c) => c.length > 0)
+      .map((w) => {
+        // Try cnCache first, then loaded word data, then empty
+        let translation = cnCache.current.get(w.word) || "";
+        if (!translation && w.data?.meanings?.[0]?.definitions?.[0]?.definition) {
+          translation = w.data.meanings[0].definitions[0].definition;
+        }
+        return { word: w.word, translation };
+      })
+      .filter((d) => d.translation.length > 0)
       .slice(0, 5);
   }, [currentIndex, dueWords.length]);
 
@@ -424,6 +449,7 @@ export default function Review() {
                     <QuizChoice
                       key={current.word + currentIndex}
                       data={current.data}
+                      examples={current.examples}
                       distractors={distractors}
                       onResult={handleQuizResult}
                     />
