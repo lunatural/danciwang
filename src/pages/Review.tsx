@@ -275,6 +275,17 @@ export default function Review() {
     setLoading(false);
   };
 
+  // Build distractor list from other due words (MUST be before any early return for hook consistency)
+  const distractors = useMemo(() => {
+    const c = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
+    if (!c || c.mode !== "choice") return [];
+    return dueWords
+      .filter((w) => w.word !== c.word)
+      .map((w) => cnCache.current.get(w.word) || "")
+      .filter((c) => c.length > 0)
+      .slice(0, 5);
+  }, [currentIndex, dueWords.length]);
+
   if (loading) {
     return <div className="text-center text-gray-400 py-10 text-sm">加载中...</div>;
   }
@@ -283,27 +294,10 @@ export default function Review() {
     const total = resultsRef.current.length;
     const correct = resultsRef.current.filter((r) => r.correct).length;
     const duration = Math.round((Date.now() - startTimeRef.current) / 1000);
-    return (
-      <ReviewResult
-        total={total}
-        correct={correct}
-        duration={duration}
-        onRestart={handleRestart}
-      />
-    );
+    return <ReviewResult total={total} correct={correct} duration={duration} onRestart={handleRestart} />;
   }
 
   const current = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
-
-  // Build distractor list from other due words' cached Chinese translations
-  const distractors = useMemo(() => {
-    if (!current || current.mode !== "choice") return [];
-    return dueWords
-      .filter((w) => w.word !== current.word)
-      .map((w) => cnCache.current.get(w.word) || "")
-      .filter((c) => c.length > 0)
-      .slice(0, 5);
-  }, [currentIndex, dueWords.length]);
 
   function renderDaysLabel(nextReviewAt: string) {
     const now = new Date();
