@@ -5,7 +5,7 @@ import { useSyncVersion } from "../App";
 import { getWords, getLearningWords, getReviewSchedule } from "../hooks/useData";
 import { getTodayActivity, getDailyHistory } from "../utils/dailyActivity";
 import ShareButton from "../components/ShareButton";
-import { BookOpen, Search, RefreshCw, BarChart3, TrendingUp, Calendar } from "lucide-react";
+import { BookOpen, Search, RefreshCw, BarChart3, TrendingUp, ChevronDown } from "lucide-react";
 import gsap from "gsap";
 
 function AnimatedNumber({ target, duration = 1.2 }: { target: number; duration?: number }) {
@@ -39,6 +39,7 @@ export default function Home() {
   const [history, setHistory] = useState<{ date: string; learnedCount: number; reviewedCount: number }[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [showAnimated, setShowAnimated] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const [isDesktop, setIsDesktop] = useState(window.innerWidth >= 640);
 
   useEffect(() => {
@@ -203,71 +204,52 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Today's Review */}
-      <div className="home-card glass rounded-2xl p-4 sm:p-5 space-y-3">
-        <div className="flex items-center gap-2">
-          <TrendingUp size={18} strokeWidth={1.8} className="text-purple-500" />
-          <h2 className="text-sm sm:text-base font-semibold text-purple-700">
-            今日回顾{todayTotal > 0 ? ` · ${todayTotal} 次学习` : ""}
-          </h2>
-        </div>
-
-        <div className="flex gap-3 sm:gap-4">
-          <div className="flex-1 bg-green-50 rounded-xl p-3 text-center">
-            <p className="text-2xl sm:text-3xl font-bold text-green-600">{todayStats.learnedCount}</p>
-            <p className="text-xs text-green-500 mt-0.5">新学</p>
+      {/* Compact daily summary + expandable history */}
+      <div className="home-card glass rounded-2xl p-3 sm:p-4 space-y-2">
+        <button
+          onClick={() => setHistoryExpanded(!historyExpanded)}
+          className="w-full flex items-center justify-between text-left"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <TrendingUp size={16} strokeWidth={1.8} className="text-purple-500 shrink-0" />
+            <span className="text-xs sm:text-sm font-medium text-purple-700 truncate">
+              今日
+              {todayStats.learnedCount > 0 && <span className="text-green-600 ml-1">+{todayStats.learnedCount} 新学</span>}
+              {todayStats.reviewedCount > 0 && <span className="text-purple-600 ml-1">{todayStats.reviewedCount} 复习</span>}
+              {todayTotal === 0 && "暂无学习记录"}
+            </span>
           </div>
-          <div className="flex-1 bg-purple-50 rounded-xl p-3 text-center">
-            <p className="text-2xl sm:text-3xl font-bold text-purple-600">{todayStats.reviewedCount}</p>
-            <p className="text-xs text-purple-500 mt-0.5">复习</p>
-          </div>
-          {todayTotal > 0 && (
-            <div className="flex-1 bg-blue-50 rounded-xl p-3 text-center">
-              <p className="text-2xl sm:text-3xl font-bold text-blue-600">
-                {todayStats.reviewedCount > 0 ? Math.round((todayStats.reviewedCount / todayTotal) * 100) : 0}%
-              </p>
-              <p className="text-xs text-blue-500 mt-0.5">复习占比</p>
-            </div>
-          )}
-        </div>
-      </div>
+          <ChevronDown
+            size={16}
+            strokeWidth={1.8}
+            className={`text-gray-400 shrink-0 transition-transform ${historyExpanded ? "rotate-180" : ""}`}
+          />
+        </button>
 
-      {/* Learning History */}
-      {history.length > 0 && (
-        <div className="home-card glass rounded-2xl p-4 sm:p-5 space-y-3">
-          <div className="flex items-center gap-2">
-            <Calendar size={18} strokeWidth={1.8} className="text-purple-500" />
-            <h2 className="text-sm sm:text-base font-semibold text-purple-700">学习历史</h2>
-          </div>
-
-          <div className="space-y-1.5">
+        {historyExpanded && history.length > 0 && (
+          <div className="border-t border-gray-100 pt-2 space-y-1">
             {history.slice(0, 14).map((day) => (
-              <div key={day.date} className="flex items-center gap-3 py-1.5 border-b border-gray-100 last:border-0">
-                <span className="text-xs text-gray-400 w-14 shrink-0">
-                  {formatDate(day.date)}
-                  <span className="text-gray-300 ml-0.5">{getWeekday(day.date)}</span>
+              <div key={day.date} className="flex items-center gap-2 py-1 text-xs">
+                <span className="text-gray-400 w-16 shrink-0">
+                  {formatDate(day.date)} {getWeekday(day.date)}
                 </span>
-                <div className="flex-1 flex items-center gap-2">
+                <div className="flex-1 flex items-center gap-1.5">
                   {day.learnedCount > 0 && (
-                    <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">
-                      +{day.learnedCount} 新学
-                    </span>
+                    <span className="bg-green-100 text-green-600 px-1.5 py-0.5 rounded-full text-[10px]">+{day.learnedCount}</span>
                   )}
                   {day.reviewedCount > 0 && (
-                    <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full">
-                      {day.reviewedCount} 复习
-                    </span>
-                  )}
-                  {day.learnedCount === 0 && day.reviewedCount === 0 && (
-                    <span className="text-xs text-gray-300">无记录</span>
+                    <span className="bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded-full text-[10px]">{day.reviewedCount}复</span>
                   )}
                 </div>
-                <span className="text-xs text-gray-300">{day.learnedCount + day.reviewedCount} 次</span>
+                <span className="text-gray-300 text-[10px]">{day.learnedCount + day.reviewedCount}次</span>
               </div>
             ))}
           </div>
-        </div>
-      )}
+        )}
+        {historyExpanded && history.length === 0 && (
+          <p className="text-xs text-gray-300 text-center py-2">还没有学习记录</p>
+        )}
+      </div>
 
       <div className="home-card">
         <ShareButton
