@@ -48,6 +48,15 @@ function Protected({ children }: { children: React.ReactNode }) {
 
     // Online Supabase user: pull from cloud first, then push local if needed
     let cancelled = false;
+
+    // Safety: never stay on sync screen longer than 10 seconds
+    const syncTimeout = setTimeout(() => {
+      if (!cancelled) {
+        setSyncVersion((v) => v + 1);
+        setSyncReady(true);
+      }
+    }, 10000);
+
     const initSync = async () => {
       try {
         // Step 1: Pull latest from cloud
@@ -92,6 +101,7 @@ function Protected({ children }: { children: React.ReactNode }) {
         // Sync failed, use local data
       }
       if (!cancelled) {
+        clearTimeout(syncTimeout);
         setSyncVersion((v) => v + 1);
         setSyncReady(true);
       }
@@ -102,7 +112,7 @@ function Protected({ children }: { children: React.ReactNode }) {
     };
 
     initSync();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(syncTimeout); };
   }, [user?.id, user?.provider, isOnline]);
 
   // Flush queue when coming back online

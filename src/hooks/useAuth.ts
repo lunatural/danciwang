@@ -90,6 +90,12 @@ export function useAuth() {
           };
           localStorage.setItem("vocab_current_user", JSON.stringify(su));
           setUser(su);
+        } else if (_event === "SIGNED_OUT" || _event === "TOKEN_REFRESHED") {
+          // Session ended — clear cache
+          if (_event === "SIGNED_OUT") {
+            localStorage.removeItem("vocab_current_user");
+            setUser(null);
+          }
         }
       }
     );
