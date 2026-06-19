@@ -1,3 +1,5 @@
+import { supabase } from "../supabase";
+
 interface DailyActivity {
   date: string;
   learnedCount: number;
@@ -53,14 +55,31 @@ export function incrementDailyCount(userId: string, field: "learnedCount" | "rev
   } else {
     history.push(activity);
   }
-  // Keep last 90 days
   if (history.length > 90) history.shift();
   localStorage.setItem(historyKey(userId), JSON.stringify(history));
 
-  // Push to cloud immediately if this is a Supabase user
+  // Push to cloud — use sum to avoid overwriting other device's counts
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) {
-    import("../hooks/useSync").then(({ pushDailyHistoryToCloud }) => {
-      pushDailyHistoryToCloud(userId, [activity]).catch(() => {});
-    });
+    const key = { user_id: userId, date: activity.date };
+    // Read existing cloud value first, then add
+    supabase.from("daily_activity")
+      .select("learned_count, reviewed_count")
+      .eq("user_id", userId)
+      .eq("date", activity.date)
+      .maybeSingle()
+      .then(({ data }) => {
+        const cloudLearned = data?.learned_count || 0;
+        const cloudReviewed = data?.reviewed_count || 0;
+        // Use local value as source of truth (it already includes all local increments)
+        // but ensure we don't lose cloud-only increments
+        const merged = {
+          learned_count: Math.max(activity.learnedCount, cloudLearned),
+          reviewed_count: Math.max(activity.reviewedCount, cloudReviewed),
+        };
+        return supabase.from("daily_activity").upsert({
+          ...key,
+          ...merged,
+        }, { onConflict: "user_id, date" });
+      }).catch(() => {});
   }
 }

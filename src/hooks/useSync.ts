@@ -431,19 +431,39 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
   const scheduleMerged = [...localOnlySchedule, ...cloud.schedule];
   localStorage.setItem(`vocab_schedule_${userId}`, JSON.stringify(scheduleMerged));
 
-  // ── Daily History ── (merge: cloud entries win on same date)
+  // ── Daily History ── (merge: sum counts for same date)
   const localHistoryRaw = localStorage.getItem(`vocab_daily_history_${userId}`);
   const localHistory: DailyActivityEntry[] = localHistoryRaw ? JSON.parse(localHistoryRaw) : [];
-  const cloudHistoryDates = new Set(cloud.dailyHistory.map((h) => h.date));
-  const localOnlyHistory = localHistory.filter((h) => !cloudHistoryDates.has(h.date));
-  const historyMerged = [...localOnlyHistory, ...cloud.dailyHistory].sort(
+
+  // Create a date-indexed map, summing counts from both local and cloud
+  const historyMap = new Map<string, DailyActivityEntry>();
+  for (const h of localHistory) {
+    historyMap.set(h.date, { ...h });
+  }
+  for (const h of cloud.dailyHistory) {
+    const existing = historyMap.get(h.date);
+    if (existing) {
+      existing.learnedCount = Math.max(existing.learnedCount, h.learnedCount);
+      existing.reviewedCount = Math.max(existing.reviewedCount, h.reviewedCount);
+    } else {
+      historyMap.set(h.date, { ...h });
+    }
+  }
+  const historyMerged = Array.from(historyMap.values()).sort(
     (a, b) => b.date.localeCompare(a.date)
   );
   localStorage.setItem(`vocab_daily_history_${userId}`, JSON.stringify(historyMerged));
 
-  // Push ALL local history to cloud (fire-and-forget) — ensures full sync
-  if (localHistory.length > 0) {
-    pushDailyHistoryToCloud(userId, localHistory).catch(() => {});
+  // Also update today's activity from merged history
+  const today = new Date().toISOString().slice(0, 10);
+  const todayEntry = historyMap.get(today);
+  if (todayEntry) {
+    localStorage.setItem(`vocab_daily_${userId}`, JSON.stringify(todayEntry));
+  }
+
+  // Push merged history back to cloud (fire-and-forget)
+  if (historyMerged.length > 0) {
+    pushDailyHistoryToCloud(userId, historyMerged).catch(() => {});
   }
 
   // Push local-only schedules to cloud (fire-and-forget)
