@@ -3,9 +3,9 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
 import { getWords, getLearningWords, getReviewSchedule } from "../hooks/useData";
-import { getTodayActivity } from "../utils/dailyActivity";
+import { getTodayActivity, getDailyHistory } from "../utils/dailyActivity";
 import ShareButton from "../components/ShareButton";
-import { BookOpen, Search, RefreshCw, BarChart3 } from "lucide-react";
+import { BookOpen, Search, RefreshCw, BarChart3, TrendingUp, Calendar } from "lucide-react";
 import gsap from "gsap";
 
 function AnimatedNumber({ target, duration = 1.2 }: { target: number; duration?: number }) {
@@ -36,6 +36,7 @@ export default function Home() {
   const [learningCount, setLearningCount] = useState(0);
   const [dueCount, setDueCount] = useState(0);
   const [todayStats, setTodayStats] = useState({ learnedCount: 0, reviewedCount: 0 });
+  const [history, setHistory] = useState<{ date: string; learnedCount: number; reviewedCount: number }[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [showAnimated, setShowAnimated] = useState(false);
   const [isDesktop, setIsDesktop] = useState(window.innerWidth >= 640);
@@ -57,6 +58,7 @@ export default function Home() {
     setDueCount(schedule.filter((s) => s.nextReviewAt <= now).length);
     const activity = getTodayActivity(user.id);
     setTodayStats({ learnedCount: activity.learnedCount, reviewedCount: activity.reviewedCount });
+    setHistory(getDailyHistory(user.id).reverse());
     setShowAnimated(true);
   }, [user, syncVersion]);
 
@@ -96,6 +98,23 @@ export default function Home() {
     { path: "/review", icon: RefreshCw, label: "开始复习", from: "#c084fc", end: "#9333ea" },
   ];
 
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr + "T00:00:00");
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (dateStr === today.toISOString().slice(0, 10)) return "今天";
+    if (dateStr === yesterday.toISOString().slice(0, 10)) return "昨天";
+    return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+  };
+
+  const getWeekday = (dateStr: string) => {
+    const d = new Date(dateStr + "T00:00:00");
+    return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+  };
+
+  const todayTotal = todayStats.learnedCount + todayStats.reviewedCount;
+
   return (
     <div ref={containerRef} className="space-y-3 sm:space-y-8 relative z-10">
       <h1 className="text-sm sm:text-2xl font-bold text-purple-700">
@@ -113,7 +132,6 @@ export default function Home() {
               className="home-card group relative block h-28 sm:h-72 rounded-2xl overflow-hidden sm:overflow-visible transition-[transform,box-shadow] duration-200 ease-linear"
               style={{ transformStyle: "preserve-3d" }}
             >
-              {/* Default skewed panel — hides on hover */}
               <span
                 className="absolute top-0 left-[25px] sm:left-[45px] w-[60%] h-full rounded-2xl transition-all duration-500 ease-out group-hover:opacity-0"
                 style={{
@@ -121,7 +139,6 @@ export default function Home() {
                   transform: "skewX(8deg)",
                 }}
               />
-              {/* Hover straightened panel — shows on hover */}
               <span
                 className="absolute top-0 left-[15px] w-[calc(100%-60px)] h-full rounded-2xl opacity-0 transition-all duration-500 ease-out group-hover:opacity-100"
                 style={{
@@ -129,7 +146,6 @@ export default function Home() {
                   transform: "skewX(0deg)",
                 }}
               />
-              {/* Blur glow — hides on hover */}
               <span
                 className="absolute top-0 left-[25px] sm:left-[45px] w-[60%] h-full rounded-2xl opacity-30 blur-[26px] sm:blur-[32px] transition-all duration-500 ease-out pointer-events-none group-hover:opacity-0"
                 style={{
@@ -137,7 +153,6 @@ export default function Home() {
                   transform: "skewX(8deg)",
                 }}
               />
-              {/* Blur glow — shows on hover */}
               <span
                 className="absolute top-0 left-[15px] w-[calc(100%-60px)] h-full rounded-2xl opacity-0 blur-[26px] sm:blur-[32px] transition-all duration-500 ease-out pointer-events-none group-hover:opacity-30"
                 style={{
@@ -145,14 +160,10 @@ export default function Home() {
                   transform: "skewX(0deg)",
                 }}
               />
-
-              {/* Animated blob decorations */}
               <span className="pointer-events-none absolute inset-0 z-10 overflow-visible">
                 <span className="absolute top-0 left-0 w-0 h-0 rounded-2xl opacity-0 bg-white/10 backdrop-blur-sm transition-all duration-500 ease-out animate-blob group-hover:top-[-30px] group-hover:left-[30px] group-hover:w-[60px] group-hover:h-[60px] group-hover:opacity-100" />
                 <span className="absolute bottom-0 right-0 w-0 h-0 rounded-2xl opacity-0 bg-white/10 backdrop-blur-sm transition-all duration-700 ease-out animate-blob-alt group-hover:bottom-[-30px] group-hover:right-[30px] group-hover:w-[60px] group-hover:h-[60px] group-hover:opacity-100" />
               </span>
-
-              {/* Glass content card — floats above with translateZ for 3D depth */}
               <div
                 className="relative z-20 bg-white/25 backdrop-blur-md border border-white/30 rounded-2xl h-full flex flex-row sm:flex-col items-center sm:items-start gap-2 sm:gap-0 p-2.5 sm:p-6 transition-all duration-500 group-hover:bg-white/30 group-hover:shadow-lg"
                 style={{ transform: `translateZ(${tz(30)})`, transformStyle: "preserve-3d" }}
@@ -191,6 +202,72 @@ export default function Home() {
           </Link>
         ))}
       </div>
+
+      {/* Today's Review */}
+      <div className="home-card glass rounded-2xl p-4 sm:p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <TrendingUp size={18} strokeWidth={1.8} className="text-purple-500" />
+          <h2 className="text-sm sm:text-base font-semibold text-purple-700">
+            今日回顾{todayTotal > 0 ? ` · ${todayTotal} 次学习` : ""}
+          </h2>
+        </div>
+
+        <div className="flex gap-3 sm:gap-4">
+          <div className="flex-1 bg-green-50 rounded-xl p-3 text-center">
+            <p className="text-2xl sm:text-3xl font-bold text-green-600">{todayStats.learnedCount}</p>
+            <p className="text-xs text-green-500 mt-0.5">新学</p>
+          </div>
+          <div className="flex-1 bg-purple-50 rounded-xl p-3 text-center">
+            <p className="text-2xl sm:text-3xl font-bold text-purple-600">{todayStats.reviewedCount}</p>
+            <p className="text-xs text-purple-500 mt-0.5">复习</p>
+          </div>
+          {todayTotal > 0 && (
+            <div className="flex-1 bg-blue-50 rounded-xl p-3 text-center">
+              <p className="text-2xl sm:text-3xl font-bold text-blue-600">
+                {todayStats.reviewedCount > 0 ? Math.round((todayStats.reviewedCount / todayTotal) * 100) : 0}%
+              </p>
+              <p className="text-xs text-blue-500 mt-0.5">复习占比</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Learning History */}
+      {history.length > 0 && (
+        <div className="home-card glass rounded-2xl p-4 sm:p-5 space-y-3">
+          <div className="flex items-center gap-2">
+            <Calendar size={18} strokeWidth={1.8} className="text-purple-500" />
+            <h2 className="text-sm sm:text-base font-semibold text-purple-700">学习历史</h2>
+          </div>
+
+          <div className="space-y-1.5">
+            {history.slice(0, 14).map((day) => (
+              <div key={day.date} className="flex items-center gap-3 py-1.5 border-b border-gray-100 last:border-0">
+                <span className="text-xs text-gray-400 w-14 shrink-0">
+                  {formatDate(day.date)}
+                  <span className="text-gray-300 ml-0.5">{getWeekday(day.date)}</span>
+                </span>
+                <div className="flex-1 flex items-center gap-2">
+                  {day.learnedCount > 0 && (
+                    <span className="text-xs bg-green-100 text-green-600 px-2 py-0.5 rounded-full">
+                      +{day.learnedCount} 新学
+                    </span>
+                  )}
+                  {day.reviewedCount > 0 && (
+                    <span className="text-xs bg-purple-100 text-purple-600 px-2 py-0.5 rounded-full">
+                      {day.reviewedCount} 复习
+                    </span>
+                  )}
+                  {day.learnedCount === 0 && day.reviewedCount === 0 && (
+                    <span className="text-xs text-gray-300">无记录</span>
+                  )}
+                </div>
+                <span className="text-xs text-gray-300">{day.learnedCount + day.reviewedCount} 次</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="home-card">
         <ShareButton

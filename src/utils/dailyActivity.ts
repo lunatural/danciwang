@@ -8,6 +8,10 @@ function storageKey(userId: string): string {
   return `vocab_daily_${userId}`;
 }
 
+function historyKey(userId: string): string {
+  return `vocab_daily_history_${userId}`;
+}
+
 function getToday(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -26,8 +30,30 @@ export function getTodayActivity(userId: string): DailyActivity {
   }
 }
 
+export function getDailyHistory(userId: string): DailyActivity[] {
+  try {
+    const raw = localStorage.getItem(historyKey(userId));
+    if (!raw) return [];
+    return JSON.parse(raw) as DailyActivity[];
+  } catch {
+    return [];
+  }
+}
+
 export function incrementDailyCount(userId: string, field: "learnedCount" | "reviewedCount"): void {
   const activity = getTodayActivity(userId);
   activity[field] += 1;
   localStorage.setItem(storageKey(userId), JSON.stringify(activity));
+
+  // Update history
+  const history = getDailyHistory(userId);
+  const todayIdx = history.findIndex((h) => h.date === activity.date);
+  if (todayIdx >= 0) {
+    history[todayIdx] = activity;
+  } else {
+    history.push(activity);
+  }
+  // Keep last 90 days
+  if (history.length > 90) history.shift();
+  localStorage.setItem(historyKey(userId), JSON.stringify(history));
 }
