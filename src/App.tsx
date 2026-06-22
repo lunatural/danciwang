@@ -86,9 +86,7 @@ function Protected({ children }: { children: React.ReactNode }) {
             if (localWords.length > cloud.words.length) {
               await pushWordsToCloud(user.id, localWords).catch(() => {});
             }
-            if (localLearning.length > cloud.learning.length) {
-              await pushLearningToCloud(user.id, localLearning).catch(() => {});
-            }
+            // Note: learning queue is NOT bulk-pushed — individual add/remove sync it
             if (localSchedule.length > cloud.schedule.length) {
               await pushScheduleToCloud(user.id, localSchedule).catch(() => {});
             }

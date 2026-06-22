@@ -1,10 +1,11 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { useAuth } from "../hooks/useAuth";
-import { useSyncVersion } from "../App";
 import { useLocation } from "react-router-dom";
 import { getReviewSchedule, getWords, updateReviewSchedule } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
+import { searchLocalDict } from "../utils/localDict";
+import { mergeWordData } from "../utils/wordDataMerge";
 import { calculateNextReview } from "../utils/sm2";
 import FlashCard from "../components/FlashCard";
 import RatingButtons from "../components/RatingButtons";
@@ -34,7 +35,6 @@ interface ReviewWord {
 
 export default function Review() {
   const { user } = useAuth();
-  const syncVersion = useSyncVersion();
   const [allDueWords, setAllDueWords] = useState<ReviewWord[]>([]);
   const [dueWords, setDueWords] = useState<ReviewWord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -120,7 +120,7 @@ export default function Review() {
     setAllScheduled(scheduled);
 
     setLoading(false);
-  }, [user, syncVersion, reviewMode]);
+  }, [user, reviewMode]);
 
   const changeGroup = (group: string) => {
     setGroupFilter(group);
@@ -167,20 +167,26 @@ export default function Review() {
     }, 20000);
 
     Promise.all([
+      searchLocalDict(w),
       fetchWord(w),
       fetchExampleSentences(w),
-    ]).then(async ([data, exs]) => {
+    ]).then(async ([local, data, exs]) => {
       clearTimeout(timeout);
       if (gen !== fetchGenRef.current) return;
       // Pre-cache Chinese translation for distractor use
-      if (data && !cnCache.current.has(w)) {
+      if (local && !cnCache.current.has(w)) {
+        cnCache.current.set(w, local.translation || local.definition || "");
+      } else if (data && !cnCache.current.has(w)) {
         const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
         if (cn) cnCache.current.set(w, cn);
       }
+      const merged = (local || data)
+        ? mergeWordData(w, local, data, exs)
+        : null;
       setDueWords((prev) => {
         if (idx >= prev.length) return prev;
         const u = [...prev];
-        u[idx] = { ...u[idx], data, examples: exs };
+        u[idx] = { ...u[idx], data: merged, examples: exs };
         return u;
       });
       setLoadingWord(false);
@@ -201,18 +207,24 @@ export default function Review() {
       const next = dueWords[currentIndex + 1];
       if (!next.data) {
         Promise.all([
+          searchLocalDict(next.word),
           fetchWord(next.word),
           fetchExampleSentences(next.word),
-        ]).then(async ([data, exs]) => {
-          if (data && !cnCache.current.has(next.word)) {
+        ]).then(async ([local, data, exs]) => {
+          if (local && !cnCache.current.has(next.word)) {
+            cnCache.current.set(next.word, local.translation || local.definition || "");
+          } else if (data && !cnCache.current.has(next.word)) {
             const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
             if (cn) cnCache.current.set(next.word, cn);
           }
+          const merged = (local || data)
+            ? mergeWordData(next.word, local, data, exs)
+            : null;
           setDueWords((prev) => {
             const idx = currentIndex + 1;
             if (idx >= prev.length) return prev;
             const u = [...prev];
-            u[idx] = { ...u[idx], data, examples: exs };
+            u[idx] = { ...u[idx], data: merged, examples: exs };
             return u;
           });
         }).catch(() => {});
@@ -303,23 +315,65 @@ export default function Review() {
     setLoading(false);
   };
 
-  // Build distractor list from other due words
+  // Build smart distractor list — prefer confusable words
   const distractors = useMemo(() => {
-    const c = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
-    if (!c || c.mode !== "choice") return [] as { word: string; translation: string }[];
-    return dueWords
-      .filter((w) => w.word !== c.word)
-      .map((w) => {
-        // Try cnCache first, then loaded word data, then empty
-        let translation = cnCache.current.get(w.word) || "";
-        if (!translation && w.data?.meanings?.[0]?.definitions?.[0]?.definition) {
-          translation = w.data.meanings[0].definitions[0].definition;
+    const current = dueWords.length > 0 ? dueWords[currentIndex] : undefined;
+    if (!current || current.mode !== "choice") return [] as { word: string; translation: string }[];
+    const targetWord = current.word.toLowerCase();
+    const targetPos = current.data?.meanings?.[0]?.partOfSpeech || "";
+    const targetPrefix2 = targetWord.slice(0, 2);
+    const targetPrefix1 = targetWord[0];
+
+    // Pre-compute synonym set for the target word
+    const targetSynonymSet = new Set<string>();
+    if (current.data) {
+      for (const m of current.data.meanings) {
+        for (const s of m.synonyms || []) {
+          targetSynonymSet.add(s.toLowerCase());
         }
-        return { word: w.word, translation };
-      })
-      .filter((d) => d.translation.length > 0)
-      .slice(0, 5);
-  }, [currentIndex, dueWords.length]);
+      }
+    }
+
+    // Score each candidate by confusability
+    const scored: { word: string; translation: string; score: number }[] = [];
+    for (const w of dueWords) {
+      if (w.word === current.word) continue;
+      const cn = cnCache.current.get(w.word);
+      const en = w.data?.meanings?.[0]?.definitions?.[0]?.definition;
+      const translation = cn || en || "";
+      if (!translation) continue;
+
+      const wl = w.word.toLowerCase();
+      let score = 0;
+
+      // Synonyms = best distractors
+      if (targetSynonymSet.has(wl)) {
+        score += 10;
+      } else {
+        // Check reverse synonym
+        if (w.data) {
+          for (const m of w.data.meanings) {
+            for (const s of m.synonyms || []) {
+              if (s.toLowerCase() === targetWord) { score += 10; break; }
+            }
+            if (score >= 10) break;
+          }
+        }
+        // Same first 2 letters
+        if (wl.slice(0, 2) === targetPrefix2) score += 5;
+        else if (wl[0] === targetPrefix1) score += 3;
+      }
+      // Same part of speech
+      if (targetPos && w.data?.meanings?.[0]?.partOfSpeech === targetPos) score += 2;
+      // Similar length
+      if (Math.abs(wl.length - targetWord.length) <= 2) score += 1;
+
+      scored.push({ word: w.word, translation, score });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 5);
+  }, [currentIndex, dueWords]);
 
   if (loading) {
     return <div className="text-center text-gray-400 py-10 text-sm">加载中...</div>;

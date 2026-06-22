@@ -471,11 +471,8 @@ export function mergeCloudIntoLocal(userId: string, cloud: CloudData): void {
     pushScheduleToCloud(userId, localOnlySchedule).catch(() => {});
   }
 
-  // Also push local-only learning to cloud
-  const localOnlyLearning = localLearning.filter((lw) => !cloudLearningSet.has(lw));
-  if (localOnlyLearning.length > 0) {
-    pushLearningToCloud(userId, localOnlyLearning).catch(() => {});
-  }
+  // Note: local-only learning is NOT pushed here — only individual addToLearning/removeFromLearning
+  // calls push to cloud. This prevents a device with stale data from re-adding deleted words.
 }
 
 export async function pushWordsToCloud(

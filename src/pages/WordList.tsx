@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
-import { getWords, addWord, addToLearning, removeWord, removeGroup, getReviewSchedule, removeReviewSchedule, batchImportWords } from "../hooks/useData";
+import { getWords, addWord, addToLearning, getLearningWords, removeWord, removeGroup, getReviewSchedule, removeReviewSchedule, batchImportWords } from "../hooks/useData";
 import { getVocabLists, getVocabList } from "../utils/api";
-import { ChevronDown, ChevronRight, Upload, Database } from "lucide-react";
+import { ChevronDown, ChevronRight, Upload, Database, BookOpen } from "lucide-react";
 import { importAnkiData, parseAnkiFile, getAnkiDecks, removeAllAnkiData, type AnkiNote } from "../utils/ankiParser";
 
 export default function WordList() {
@@ -95,6 +95,30 @@ export default function WordList() {
     removeGroup(user.id, group);
     setConfirmDelete(null);
     loadWords();
+  };
+
+  const handleAddGroupToLearning = (group: string) => {
+    if (!user) return;
+    const words = getWords(user.id).filter((w) => w.group === group);
+    const schedule = getReviewSchedule(user.id);
+    const reviewWords = new Set(schedule.map((s) => s.word));
+    let added = 0;
+    let skipped = 0;
+    for (const w of words) {
+      if (reviewWords.has(w.word)) {
+        skipped++;
+        continue; // skip words already in review
+      }
+      const learning = getLearningWords(user.id);
+      if (!learning.includes(w.word)) {
+        addToLearning(user.id, w.word);
+        added++;
+      }
+    }
+    let msg = `已将「${group}」中 ${added} 个新单词加入学习队列`;
+    if (skipped > 0) msg += `，跳过 ${skipped} 个已在复习中的单词`;
+    setImportMessage(msg);
+    setTimeout(() => setImportMessage(""), 4000);
   };
 
   const toggleGroup = (name: string) => {
@@ -293,12 +317,21 @@ export default function WordList() {
                       </button>
                     </div>
                   ) : (
-                    <button
-                      onClick={() => setConfirmDelete(group.name)}
-                      className="text-[10px] sm:text-xs text-red-400 hover:text-red-600 transition-colors px-1.5 sm:px-2 py-0.5 sm:py-1 shrink-0"
-                    >
-                      删除整组
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0 ml-2">
+                      <button
+                        onClick={() => handleAddGroupToLearning(group.name)}
+                        className="text-[10px] sm:text-xs text-purple-400 hover:text-purple-600 transition-colors px-1.5 sm:px-2 py-0.5 sm:py-1 inline-flex items-center gap-0.5"
+                      >
+                        <BookOpen size={12} strokeWidth={1.5} />
+                        加入学习
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(group.name)}
+                        className="text-[10px] sm:text-xs text-red-400 hover:text-red-600 transition-colors px-1.5 sm:px-2 py-0.5 sm:py-1"
+                      >
+                        删除整组
+                      </button>
+                    </div>
                   )}
                 </div>
                 {isExpanded && (

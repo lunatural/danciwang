@@ -19,11 +19,14 @@ function loadDict(): Promise<DictData> {
   if (dictData) return Promise.resolve(dictData);
   if (dictPromise) return dictPromise;
 
-  dictPromise = fetch('/ecdict.json')
-    .then((res) => res.json() as Promise<DictData>)
-    .then((data) => {
-      dictData = data;
-      return data;
+  dictPromise = Promise.all([
+    fetch("/ecdict_1.json").then((res) => res.json()),
+    fetch("/ecdict_2.json").then((res) => res.json()),
+  ])
+    .then(([part1, part2]) => {
+      const merged = { ...part1, ...part2 } as DictData;
+      dictData = merged;
+      return merged;
     })
     .catch((err) => {
       dictPromise = null;
@@ -37,41 +40,61 @@ export function isDictLoaded(): boolean {
   return dictData !== null;
 }
 
-/**
- * Search the local ECDICT dictionary for a word.
- * Returns null if not found, or a formatted result.
- */
+function cleanPartOfSpeech(raw: string): string {
+  if (!raw) return "";
+  // ECDICT pos field often has frequency data like "v:42/n:58"
+  const parts = raw.split("/").map((p) => p.replace(/:\d+/g, "").trim());
+  const map: Record<string, string> = {
+    v: "v.", n: "n.", adj: "adj.", adv: "adv.", prep: "prep.",
+    conj: "conj.", pron: "pron.", art: "art.", num: "num.",
+    int: "int.", aux: "aux.", vt: "vt.", vi: "vi.",
+    abbr: "abbr.", det: "det.", interj: "interj.",
+  };
+  const cleaned = parts.map((p) => map[p.toLowerCase()] || p).filter(Boolean).join("/");
+  if (/\d/.test(cleaned) && cleaned.length > 10) return "";
+  return cleaned;
+}
+
 export async function searchLocalDict(word: string): Promise<{
   word: string;
   phonetic: string;
-  definition: string;    // English definition
-  translation: string;   // Chinese translation
+  definition: string;
+  translation: string;
   partOfSpeech: string;
   tags: string;
 } | null> {
   const dict = await loadDict();
   const key = word.toLowerCase().trim();
 
-  // Try exact match first
   let entry = dict[key] || dict[word.trim()];
   if (!entry) return null;
 
+  // New compact format: "phonetic|pos|chinese_translation"
+  if (typeof entry === "string") {
+    const parts = entry.split("|");
+    return {
+      word: word.trim(),
+      phonetic: parts[0] || "",
+      definition: "",
+      translation: parts[2] || parts[0] || "",
+      partOfSpeech: cleanPartOfSpeech(parts[1] || ""),
+      tags: "",
+    };
+  }
+
+  // Old object format (backward compat)
   return {
     word: word.trim(),
-    phonetic: entry.p || '',
-    definition: entry.d || '',
-    translation: entry.t || '',
-    partOfSpeech: entry.pos || '',
-    tags: entry.tag || '',
+    phonetic: entry.p || "",
+    definition: entry.d || "",
+    translation: entry.t || "",
+    partOfSpeech: cleanPartOfSpeech(entry.pos || ""),
+    tags: entry.tag || "",
   };
 }
 
-/**
- * Preload dictionary in background
- */
 export function preloadDict(): void {
   if (!dictPromise && !dictData) {
-    // Use requestIdleCallback or setTimeout to not block main thread
     const preload = () => loadDict();
     if (typeof requestIdleCallback !== 'undefined') {
       requestIdleCallback(preload);

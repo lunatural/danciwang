@@ -18,12 +18,17 @@ export default function QuizChoice({ data, examples, distractors, onResult }: Pr
   const [optionWords, setOptionWords] = useState<string[]>([]); // source word for each option
   const [loading, setLoading] = useState(true);
   const [showDetail, setShowDetail] = useState(false);
-  const [cnDef, setCnDef] = useState("");
+  const [cnMap, setCnMap] = useState<Record<string, string>>({});
 
   const word = data.word;
   const meanings = data.meanings || [];
   const definition = meanings[0]?.definitions[0]?.definition || "";
   const partOfSpeech = meanings[0]?.partOfSpeech || "";
+
+  // Strip POS abbreviations like "vt.", "n.", "vi." from translation text
+  function stripPOS(text: string): string {
+    return text.replace(/^(vt\.|vi\.|v\.|n\.|adj\.|adv\.|prep\.|conj\.|pron\.|art\.|int\.|aux\.|abbr\.)\s*/gi, "").trim();
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -31,7 +36,6 @@ export default function QuizChoice({ data, examples, distractors, onResult }: Pr
     const build = async () => {
       const correctCN = await translateToChinese(definition);
       if (cancelled) return;
-      setCnDef(correctCN);
 
       // Pick 3 distractors
       const valid = distractors
@@ -50,7 +54,10 @@ export default function QuizChoice({ data, examples, distractors, onResult }: Pr
         if (!valid.find((v) => v.translation === fb.translation)) valid.push(fb);
       }
 
-      const allItems = [{ word: "", translation: correctCN }, ...valid.slice(0, 3)];
+      const allItems = [
+        { word: "", translation: stripPOS(correctCN) },
+        ...valid.slice(0, 3).map((v) => ({ ...v, translation: stripPOS(v.translation) })),
+      ];
       // Shuffle
       for (let i = allItems.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
@@ -69,6 +76,26 @@ export default function QuizChoice({ data, examples, distractors, onResult }: Pr
     build();
     return () => { cancelled = true; };
   }, [data.word]);
+
+  // Translate all definitions to Chinese when detail is shown
+  useEffect(() => {
+    if (!showDetail) return;
+    const defs: string[] = [];
+    for (const m of meanings) {
+      for (const d of m.definitions.slice(0, 3)) {
+        if (d.definition) defs.push(d.definition);
+      }
+    }
+    if (defs.length === 0) return;
+    let cancelled = false;
+    Promise.all(defs.map((d) => translateToChinese(d))).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, string> = {};
+      defs.forEach((d, i) => { if (results[i]) map[d] = results[i]; });
+      setCnMap(map);
+    });
+    return () => { cancelled = true; };
+  }, [showDetail, data.word]);
 
   const handleSelect = (idx: number) => {
     if (showDetail) return; // already showing detail, wait for "下一题"
@@ -164,6 +191,9 @@ export default function QuizChoice({ data, examples, distractors, onResult }: Pr
                     <li key={di} className="text-xs text-gray-700">
                       <span className="font-medium text-purple-500">{di + 1}.</span>{" "}
                       <ClickableText text={d.definition} />
+                      {cnMap[d.definition] && (
+                        <span className="text-gray-400 ml-1">{cnMap[d.definition]}</span>
+                      )}
                       {d.example && (
                         <span className="text-gray-400 block ml-3 mt-0.5 italic">
                           "<ClickableText text={d.example} />"

@@ -2,12 +2,13 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useSyncVersion } from "../App";
-import { getLearningWords, getWords, moveToReview } from "../hooks/useData";
+import { getLearningWords, getWords, getReviewSchedule, moveToReview, removeFromLearning, removeWord } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
 import { searchLocalDict } from "../utils/localDict";
 import ClickableText from "../components/ClickableText";
-import { BookOpen, Check, ArrowLeft } from "lucide-react";
+import { BookOpen, Check, ArrowLeft, Trash2 } from "lucide-react";
+import { mergeWordData } from "../utils/wordDataMerge";
 import gsap from "gsap";
 
 type SortMode = "default" | "random" | "az" | "za";
@@ -68,6 +69,7 @@ export default function Learn() {
   const filterByGroup = useCallback(
     (ws: string[], group: string): string[] => {
       if (group === "全部") return ws;
+      if (group === "未分组") return ws.filter((w) => !wordGroupMap.has(w));
       return ws.filter((w) => wordGroupMap.get(w) === group);
     },
     [wordGroupMap]
@@ -92,6 +94,23 @@ export default function Learn() {
     // Initial word load
     if (filtered.length > 0) {
       loadWord(filtered[0]);
+    }
+  }, [user, syncVersion]);
+
+  // Clean up: remove words from learning that are already in review
+  useEffect(() => {
+    if (!user) return;
+    const learning = getLearningWords(user.id);
+    const schedule = getReviewSchedule(user.id);
+    const reviewWordSet = new Set(schedule.map((s) => s.word));
+    const toRemove = learning.filter((w) => reviewWordSet.has(w));
+    if (toRemove.length > 0) {
+      for (const w of toRemove) {
+        removeFromLearning(user.id, w);
+      }
+      setAllLearningWords((prev) => prev.filter((w) => !reviewWordSet.has(w)));
+      setOriginalWords((prev) => prev.filter((w) => !reviewWordSet.has(w)));
+      setWords((prev) => prev.filter((w) => !reviewWordSet.has(w)));
     }
   }, [user, syncVersion]);
 
@@ -144,48 +163,21 @@ export default function Learn() {
 
     setLoadingWord(true);
 
-    // Try ECDICT for instant display while API loads
-    searchLocalDict(word).then((local) => {
-      // Ignore stale response
-      if (currentWordRef.current !== word) return;
-      if (local) {
-        const localData: WordData = {
-          word: local.word,
-          phonetic: local.phonetic,
-          meanings: [{
-            partOfSpeech: local.partOfSpeech,
-            definitions: [{
-              definition: local.definition || local.translation || "",
-              example: "",
-              synonyms: [],
-              antonyms: [],
-            }],
-            synonyms: [],
-            antonyms: [],
-          }],
-          audio: "",
-          sourceUrl: "",
-        };
-        setWordData(localData);
-        setExamples([]);
-        setLoadingWord(false);
-      }
-    });
-
-    // Fetch full API data
+    // Load all sources in parallel, then merge into comprehensive data
     Promise.all([
+      searchLocalDict(word),
       fetchWord(word),
       fetchExampleSentences(word),
-    ]).then(([data, exs]) => {
-      // Ignore stale response
+    ]).then(([local, apiData, exs]) => {
       if (currentWordRef.current !== word) return;
-      if (data) {
-        wordCache.current.set(word, { data, examples: exs });
-        setWordData(data);
+
+      if (local || apiData) {
+        const merged = mergeWordData(word, local, apiData, exs);
+        wordCache.current.set(word, { data: merged, examples: exs });
+        setWordData(merged);
         setExamples(exs);
       }
       setLoadingWord(false);
-      // Pre-fetch next word
       const idx = wordsRef.current.indexOf(word);
       if (idx >= 0 && idx + 1 < wordsRef.current.length) {
         prefetchWord(wordsRef.current[idx + 1]);
@@ -198,11 +190,32 @@ export default function Learn() {
     if (wordCache.current.has(word) || prefetching.current.has(word)) return;
     prefetching.current.add(word);
     Promise.all([
+      searchLocalDict(word),
       fetchWord(word),
       fetchExampleSentences(word),
-    ]).then(([data, exs]) => {
-      // Only cache if data is valid
-      if (data) wordCache.current.set(word, { data, examples: exs });
+    ]).then(([local, data, exs]) => {
+      if (local) {
+        const wordData: WordData = {
+          word: local.word,
+          phonetic: local.phonetic || data?.phonetic || "",
+          meanings: [{
+            partOfSpeech: local.partOfSpeech || data?.meanings?.[0]?.partOfSpeech || "",
+            definitions: [{
+              definition: local.translation || local.definition || "",
+              example: "",
+              synonyms: data?.meanings?.flatMap((m: { synonyms?: string[] }) => m.synonyms || []) || [],
+              antonyms: [],
+            }],
+            synonyms: [],
+            antonyms: [],
+          }],
+          audio: data?.audio || "",
+          sourceUrl: "",
+        };
+        wordCache.current.set(word, { data: wordData, examples: exs });
+      } else if (data) {
+        wordCache.current.set(word, { data, examples: exs });
+      }
       prefetching.current.delete(word);
     }).catch(() => {
       prefetching.current.delete(word);
@@ -294,6 +307,27 @@ export default function Learn() {
     }
   };
 
+  const handleClearLearningGroup = (group: string) => {
+    if (!user) return;
+    const toRemove = group === "全部"
+      ? [...allLearningWords]
+      : allLearningWords.filter((w) => {
+          if (group === "未分组") return !wordGroupMap.has(w);
+          return wordGroupMap.get(w) === group;
+        });
+    if (toRemove.length === 0) return;
+    for (const w of toRemove) {
+      removeFromLearning(user.id, w);
+    }
+    setAllLearningWords((prev) => prev.filter((w) => !toRemove.includes(w)));
+    setOriginalWords((prev) => prev.filter((w) => !toRemove.includes(w)));
+    setWords((prev) => prev.filter((w) => !toRemove.includes(w)));
+    if (words.length <= toRemove.length) {
+      setWordData(null);
+      setExamples([]);
+    }
+  };
+
   const sortOptions: { value: SortMode; label: string }[] = [
     { value: "default", label: "默认顺序" },
     { value: "az", label: "A-Z" },
@@ -349,17 +383,29 @@ export default function Learn() {
                 (w) => wordGroupMap.get(w) === group || (group === "未分组" && !wordGroupMap.has(w))
               ).length;
               return (
-                <button
-                  key={group}
-                  onClick={() => changeGroup(group)}
-                  className={`px-3 sm:px-4 py-1 sm:py-1.5 rounded-full text-xs sm:text-sm font-medium transition-all ${
-                    groupFilter === group
-                      ? "bg-purple-500/80 backdrop-blur-sm text-white"
-                      : "bg-white/50 backdrop-blur-sm text-purple-600 border border-white/40 hover:bg-white/70"
-                  }`}
-                >
-                  {group}<span className="ml-1 opacity-70">({count})</span>
-                </button>
+                <span key={group} className="inline-flex items-center gap-0.5">
+                  <button
+                    onClick={() => changeGroup(group)}
+                    className={`px-3 sm:px-4 py-1 sm:py-1.5 rounded-l-full text-xs sm:text-sm font-medium transition-all ${
+                      groupFilter === group
+                        ? "bg-purple-500/80 backdrop-blur-sm text-white"
+                        : "bg-white/50 backdrop-blur-sm text-purple-600 border border-white/40 hover:bg-white/70"
+                    }`}
+                  >
+                    {group}<span className="ml-1 opacity-70">({count})</span>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleClearLearningGroup(group); }}
+                    className={`px-2 py-1 sm:py-1.5 rounded-r-full text-xs transition-all ${
+                      groupFilter === group
+                        ? "bg-purple-500/60 text-white hover:bg-red-400"
+                        : "bg-white/50 text-gray-400 hover:text-red-500 hover:bg-red-50 border border-white/40 border-l-0"
+                    }`}
+                    title="从学习中移除此分组"
+                  >
+                    <Trash2 size={12} strokeWidth={1.8} />
+                  </button>
+                </span>
               );
             })}
           </div>
