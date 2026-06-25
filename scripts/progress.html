@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>剑桥词典抓取进度</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      padding: 40px;
+      max-width: 800px;
+      width: 100%;
+    }
+
+    h1 {
+      font-size: 28px;
+      color: #2d3748;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #718096;
+      margin-bottom: 32px;
+      font-size: 14px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+
+    .stat-card {
+      background: #f7fafc;
+      padding: 20px;
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: bold;
+      color: #2d3748;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #718096;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .progress-section {
+      margin-bottom: 24px;
+    }
+
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 14px;
+      color: #4a5568;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+      transition: width 0.3s ease;
+    }
+
+    .group-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .group-item {
+      background: #f7fafc;
+      padding: 16px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .group-name {
+      font-weight: 600;
+      color: #2d3748;
+    }
+
+    .group-stats {
+      display: flex;
+      gap: 16px;
+      font-size: 14px;
+    }
+
+    .group-stat {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .status-pending { background: #cbd5e0; }
+    .status-active { background: #48bb78; animation: pulse 1.5s infinite; }
+    .status-complete { background: #667eea; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .current-word {
+      background: #edf2f7;
+      padding: 16px;
+      border-radius: 8px;
+      margin-top: 24px;
+      text-align: center;
+      font-size: 14px;
+      color: #4a5568;
+    }
+
+    .current-word strong {
+      color: #2d3748;
+      font-size: 18px;
+    }
+
+    .refresh-info {
+      text-align: center;
+      color: #a0aec0;
+      font-size: 12px;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📚 剑桥词典抓取进度</h1>
+    <p class="subtitle">实时监控词典数据抓取状态</p>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="totalWords">0</div>
+        <div class="stat-label">总词数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="successWords">0</div>
+        <div class="stat-label">成功</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="failedWords">0</div>
+        <div class="stat-label">失败</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="timeLeft">--</div>
+        <div class="stat-label">预计剩余</div>
+      </div>
+    </div>
+
+    <div class="progress-section">
+      <div class="progress-header">
+        <span>总体进度</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar">
+        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <div class="group-list" id="groupList">
+      <!-- 动态生成分组状态 -->
+    </div>
+
+    <div class="current-word" id="currentWord">
+      正在等待抓取开始...
+    </div>
+
+    <div class="refresh-info">
+      每 2 秒自动刷新
+    </div>
+  </div>
+
+  <script>
+    const groups = ['a-d', 'e-h', 'i-l', 'm-p', 'q-t', 'u-z'];
+    const groupSizes = {
+      'a-d': 2107,
+      'e-h': 1145,
+      'i-l': 713,
+      'm-p': 1348,
+      'q-t': 1599,
+      'u-z': 471
+    };
+
+    let totalWords = 0;
+    Object.values(groupSizes).forEach(size => totalWords += size);
+
+    // 解析日志文件
+    async function parseLog() {
+      try {
+        const response = await fetch('/fetch-progress.txt');
+        const text = await response.text();
+
+        const lines = text.split('\n');
+        let currentGroup = null;
+        let successCount = 0;
+        let failedCount = 0;
+        let currentWord = '';
+        let groupProgress = {};
+
+        groups.forEach(g => {
+          groupProgress[g] = { success: 0, failed: 0, status: 'pending' };
+        });
+
+        for (const line of lines) {
+          // 检测当前处理的分组
+          const groupMatch = line.match(/📦 处理分组 ([a-z]-[a-z])/);
+          if (groupMatch) {
+            currentGroup = groupMatch[1];
+            groupProgress[currentGroup].status = 'active';
+          }
+
+          // 统计成功/失败
+          if (line.includes('✅')) {
+            successCount++;
+            if (currentGroup) groupProgress[currentGroup].success++;
+
+            const wordMatch = line.match(/\[(\d+)\/\d+\] (.+?)\.\.\. ✅/);
+            if (wordMatch) currentWord = wordMatch[2];
+          } else if (line.includes('❌')) {
+            failedCount++;
+            if (currentGroup) groupProgress[currentGroup].failed++;
+          }
+
+          // 检测完成
+          const completeMatch = line.match(/✅ ([a-z]-[a-z]) 完成/);
+          if (completeMatch) {
+            groupProgress[completeMatch[1]].status = 'complete';
+          }
+        }
+
+        return {
+          successCount,
+          failedCount,
+          currentWord,
+          groupProgress
+        };
+      } catch (error) {
+        console.error('读取日志失败:', error);
+        return null;
+      }
+    }
+
+    // 更新 UI
+    async function updateUI() {
+      const data = await parseLog();
+      if (!data) return;
+
+      const { successCount, failedCount, currentWord, groupProgress } = data;
+      const processed = successCount + failedCount;
+      const percent = Math.round((processed / totalWords) * 100);
+
+      // 更新统计
+      document.getElementById('totalWords').textContent = totalWords;
+      document.getElementById('successWords').textContent = successCount;
+      document.getElementById('failedWords').textContent = failedCount;
+      document.getElementById('progressPercent').textContent = percent + '%';
+      document.getElementById('progressFill').style.width = percent + '%';
+
+      // 计算剩余时间
+      if (processed > 0) {
+        const remaining = totalWords - processed;
+        const minutesLeft = Math.ceil(remaining * 1.5 / 60);
+        document.getElementById('timeLeft').textContent = minutesLeft + ' 分钟';
+      }
+
+      // 更新分组列表
+      const groupListHTML = groups.map(group => {
+        const gp = groupProgress[group];
+        const statusClass = `status-${gp.status}`;
+        const statusLabel = {
+          pending: '等待中',
+          active: '进行中',
+          complete: '已完成'
+        }[gp.status];
+
+        return `
+          <div class="group-item">
+            <div>
+              <span class="status-dot ${statusClass}"></span>
+              <span class="group-name">${group}</span>
+              <span style="color: #a0aec0; margin-left: 8px;">${groupSizes[group]} 词</span>
+            </div>
+            <div class="group-stats">
+              <span class="group-stat">✅ ${gp.success}</span>
+              <span class="group-stat">❌ ${gp.failed}</span>
+              <span style="color: #a0aec0;">${statusLabel}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      document.getElementById('groupList').innerHTML = groupListHTML;
+
+      // 更新当前词
+      if (currentWord) {
+        document.getElementById('currentWord').innerHTML = `
+          正在抓取: <strong>${currentWord}</strong>
+        `;
+      }
+    }
+
+    // 每 2 秒更新一次
+    updateUI();
+    setInterval(updateUI, 2000);
+  </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vocab-master-v3';
+const CACHE_NAME = 'vocab-master-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -32,6 +32,10 @@ self.addEventListener('fetch', (event) => {
 
   // Skip non-GET requests
   if (request.method !== 'GET') return;
+
+  // Skip dev server (localhost) - don't cache during development
+  const url = new URL(request.url);
+  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') return;
 
   // Navigation requests: network first, fallback to cache
   if (request.mode === 'navigate') {

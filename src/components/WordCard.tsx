@@ -3,6 +3,23 @@ import type { WordData, SynonymData, ExampleSentence } from "../utils/api";
 import { fetchSynonyms, fetchExampleSentences, translateToChinese } from "../utils/api";
 import { analyzeWordRoots } from "../utils/wordRoots";
 import ClickableText from "./ClickableText";
+import ReportError, { type WordCorrection } from "./ReportError";
+
+const SOURCE_LABELS: Record<string, string> = {
+  'cambridge': '剑桥词典',
+  'free-api': 'Free Dictionary',
+  'oxford': '牛津词典',
+  'anki': 'Anki 词库',
+  'unknown': '未知来源',
+};
+
+const SOURCE_COLORS: Record<string, string> = {
+  'cambridge': 'bg-blue-100 text-blue-700',
+  'free-api': 'bg-green-100 text-green-700',
+  'oxford': 'bg-amber-100 text-amber-700',
+  'anki': 'bg-orange-100 text-orange-700',
+  'unknown': 'bg-gray-100 text-gray-500',
+};
 
 interface Props {
   data: WordData;
@@ -16,7 +33,26 @@ export default function WordCard({ data, isAdded, onAdd, onRemove, examples: pro
   const [synonyms, setSynonyms] = useState<SynonymData | null>(null);
   const [cnTranslations, setCnTranslations] = useState<Record<string, string>>({});
   const [examples, setExamples] = useState<ExampleSentence[]>(propExamples || []);
+  const [showReportError, setShowReportError] = useState(false);
+  const [submittedCorrections, setSubmittedCorrections] = useState<string[]>([]);
   const wordRoots = analyzeWordRoots(data.word);
+
+  const source = data.source || 'unknown';
+
+  const handleReportSubmit = (correction: WordCorrection) => {
+    // Save to localStorage
+    const key = 'word_corrections';
+    const corrections = JSON.parse(localStorage.getItem(key) || '[]');
+    corrections.push(correction);
+    localStorage.setItem(key, JSON.stringify(corrections));
+    setSubmittedCorrections((prev) => [...prev, correction.errorType]);
+    setShowReportError(false);
+  };
+
+  const hasCorrections = submittedCorrections.length > 0 || (() => {
+    const corrections = JSON.parse(localStorage.getItem('word_corrections') || '[]');
+    return corrections.some((c: WordCorrection) => c.word === data.word);
+  })();
 
   useEffect(() => {
     fetchSynonyms(data.word).then(setSynonyms);
@@ -30,7 +66,7 @@ export default function WordCard({ data, isAdded, onAdd, onRemove, examples: pro
   useEffect(() => {
     const defs: string[] = [];
     for (const m of data.meanings) {
-      for (const d of m.definitions.slice(0, 2)) {
+      for (const d of (m.definitions || []).slice(0, 2)) {
         if (d.definition) defs.push(d.definition);
       }
     }
@@ -53,7 +89,19 @@ export default function WordCard({ data, isAdded, onAdd, onRemove, examples: pro
     <div className="glass-raised rounded-2xl p-4 sm:p-6 space-y-4 sm:space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-2 sm:gap-3">
         <div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-purple-700">{data.word}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl sm:text-3xl font-bold text-purple-700">{data.word}</h2>
+            {/* Data source badge */}
+            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${SOURCE_COLORS[source] || SOURCE_COLORS.unknown}`}>
+              {SOURCE_LABELS[source] || SOURCE_LABELS.unknown}
+            </span>
+            {/* Correction indicator */}
+            {hasCorrections && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-600" title="此词曾被反馈有误">
+                ⚠️ 已反馈
+              </span>
+            )}
+          </div>
           {data.phonetic && (
             <p className="text-gray-500 mt-1 text-xs sm:text-sm">{data.phonetic}</p>
           )}
@@ -64,6 +112,14 @@ export default function WordCard({ data, isAdded, onAdd, onRemove, examples: pro
               <source src={data.audio} type="audio/mpeg" />
             </audio>
           )}
+          {/* Report error button */}
+          <button
+            onClick={() => setShowReportError(true)}
+            className="px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm text-orange-600 hover:bg-orange-50 transition-colors border border-orange-200"
+            title="报告错误"
+          >
+            ⚠️ 反馈
+          </button>
           <button
             onClick={isAdded && onRemove ? onRemove : onAdd}
             className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl font-medium text-xs sm:text-sm transition-colors ${
@@ -77,18 +133,28 @@ export default function WordCard({ data, isAdded, onAdd, onRemove, examples: pro
         </div>
       </div>
 
+      {/* Report Error Modal */}
+      {showReportError && (
+        <ReportError
+          word={data.word}
+          currentSource={source}
+          onClose={() => setShowReportError(false)}
+          onSubmit={handleReportSubmit}
+        />
+      )}
+
       {data.meanings.map((m, i) => (
         <div key={i}>
           <span className="inline-block bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
             {m.partOfSpeech}
           </span>
           <ul className="space-y-1.5 sm:space-y-2">
-            {m.definitions.slice(0, 4).map((d, j) => (
+            {(m.definitions || []).slice(0, 4).map((d, j) => (
               <li key={j} className="text-gray-700 text-xs sm:text-sm">
                 <span className="font-medium text-purple-600">{j + 1}.</span>{" "}
                 <ClickableText text={d.definition} />
                 {cnTranslations[d.definition] && (
-                  <span className="text-gray-400 ml-1">{cnTranslations[d.definition]}</span>
+                  <span className="text-gray-800 ml-1">{cnTranslations[d.definition]}</span>
                 )}
                 {d.example && (
                   <span className="text-gray-400 block ml-4 mt-0.5 italic text-xs">

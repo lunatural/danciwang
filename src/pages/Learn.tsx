@@ -5,9 +5,10 @@ import { useSyncVersion } from "../App";
 import { getLearningWords, getWords, getReviewSchedule, moveToReview, removeFromLearning, removeWord } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
-import { searchLocalDict } from "../utils/localDict";
+import { searchLocalDict, searchCambridgeDict } from "../utils/localDict";
 import ClickableText from "../components/ClickableText";
-import { BookOpen, Check, ArrowLeft, Trash2 } from "lucide-react";
+import ReportError, { type WordCorrection } from "../components/ReportError";
+import { BookOpen, Check, ArrowLeft, Trash2, AlertTriangle } from "lucide-react";
 import { mergeWordData } from "../utils/wordDataMerge";
 import gsap from "gsap";
 
@@ -51,6 +52,7 @@ export default function Learn() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [historyStack, setHistoryStack] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const [showReportError, setShowReportError] = useState(false);
   // Word data cache for instant switching
   const wordCache = useRef<Map<string, { data: WordData; examples: ExampleSentence[] }>>(new Map());
   const prefetching = useRef<Set<string>>(new Set());
@@ -75,6 +77,9 @@ export default function Learn() {
     [wordGroupMap]
   );
 
+  // 标记用户是否手动排序过，防止被 syncVersion 变化重置
+  const userHasSorted = useRef(false);
+
   useEffect(() => {
     if (!user) return;
     const raw = getLearningWords(user.id);
@@ -88,14 +93,23 @@ export default function Learn() {
 
     const filtered = filterByGroup(raw, groupFilter);
     setOriginalWords(filtered);
-    setWords(filtered);
     setLoading(false);
 
-    // Initial word load
-    if (filtered.length > 0) {
-      loadWord(filtered[0]);
+    // 只在首次加载或用户未手动排序时重置单词列表
+    if (!userHasSorted.current) {
+      setWords(filtered);
+      if (filtered.length > 0) {
+        setCurrentIndex(0);
+      }
     }
   }, [user, syncVersion]);
+
+  // Auto-load word when currentIndex or words change
+  useEffect(() => {
+    if (words.length > 0 && currentIndex < words.length) {
+      loadWord(words[currentIndex]);
+    }
+  }, [currentIndex, words]);
 
   // Clean up: remove words from learning that are already in review
   useEffect(() => {
@@ -119,26 +133,22 @@ export default function Learn() {
     const filtered = filterByGroup(allLearningWords, group);
     setOriginalWords(filtered);
     const sorted = sortMode === "default" ? filtered : sortWords(filtered, sortMode);
+    userHasSorted.current = true;
     setWords(sorted);
     setCurrentIndex(0);
     setWordData(null);
     setExamples([]);
-    if (sorted.length > 0) {
-      loadWord(sorted[0]);
-    }
   };
 
   const applySort = useCallback(
     (mode: SortMode) => {
       setSortMode(mode);
       const sorted = sortWords(originalWords, mode);
+      userHasSorted.current = true;
       setWords(sorted);
       setCurrentIndex(0);
       setWordData(null);
       setExamples([]);
-      if (sorted.length > 0) {
-        loadWord(sorted[0]);
-      }
     },
     [originalWords]
   );
@@ -153,7 +163,6 @@ export default function Learn() {
       setWordData(cached.data);
       setExamples(cached.examples);
       setLoadingWord(false);
-      // Pre-fetch next word
       const idx = wordsRef.current.indexOf(word);
       if (idx >= 0 && idx + 1 < wordsRef.current.length) {
         prefetchWord(wordsRef.current[idx + 1]);
@@ -163,25 +172,43 @@ export default function Learn() {
 
     setLoadingWord(true);
 
-    // Load all sources in parallel, then merge into comprehensive data
-    Promise.all([
-      searchLocalDict(word),
-      fetchWord(word),
-      fetchExampleSentences(word),
-    ]).then(([local, apiData, exs]) => {
-      if (currentWordRef.current !== word) return;
+    function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+      return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+    }
 
-      if (local || apiData) {
-        const merged = mergeWordData(word, local, apiData, exs);
-        wordCache.current.set(word, { data: merged, examples: exs });
+    // 所有请求并行，外部 API 加 8 秒超时
+    Promise.all([
+      searchCambridgeDict(word),
+      searchLocalDict(word),
+      withTimeout(fetchWord(word), 8000),
+      withTimeout(fetchExampleSentences(word), 8000),
+    ]).then(([cambridge, local, apiData, exs]) => {
+      if (currentWordRef.current !== word) return;
+      if (cambridge || local || apiData) {
+        const merged = mergeWordData(word, local, apiData, exs || [], cambridge);
+        wordCache.current.set(word, { data: merged, examples: exs || [] });
         setWordData(merged);
-        setExamples(exs);
+        setExamples(exs || []);
+        setLoadingWord(false);
+        const idx = wordsRef.current.indexOf(word);
+        if (idx >= 0 && idx + 1 < wordsRef.current.length) {
+          prefetchWord(wordsRef.current[idx + 1]);
+        }
+      } else {
+        // 未找到数据，自动跳到下一个词
+        setWordData(null);
+        setExamples([]);
+        setLoadingWord(false);
+        const idx = wordsRef.current.indexOf(word);
+        if (idx >= 0 && idx + 1 < wordsRef.current.length) {
+          setTimeout(() => {
+            setCurrentIndex(idx + 1);
+          }, 500);
+        }
       }
+    }).catch(() => {
+      if (currentWordRef.current !== word) return;
       setLoadingWord(false);
-      const idx = wordsRef.current.indexOf(word);
-      if (idx >= 0 && idx + 1 < wordsRef.current.length) {
-        prefetchWord(wordsRef.current[idx + 1]);
-      }
     });
   }, []);
 
@@ -189,32 +216,23 @@ export default function Learn() {
   const prefetchWord = useCallback((word: string) => {
     if (wordCache.current.has(word) || prefetching.current.has(word)) return;
     prefetching.current.add(word);
+
+    function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+      return Promise.race([
+        p,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ]);
+    }
+
     Promise.all([
+      searchCambridgeDict(word),
+      withTimeout(fetchWord(word), 8000),
+      withTimeout(fetchExampleSentences(word), 8000),
       searchLocalDict(word),
-      fetchWord(word),
-      fetchExampleSentences(word),
-    ]).then(([local, data, exs]) => {
-      if (local) {
-        const wordData: WordData = {
-          word: local.word,
-          phonetic: local.phonetic || data?.phonetic || "",
-          meanings: [{
-            partOfSpeech: local.partOfSpeech || data?.meanings?.[0]?.partOfSpeech || "",
-            definitions: [{
-              definition: local.translation || local.definition || "",
-              example: "",
-              synonyms: data?.meanings?.flatMap((m: { synonyms?: string[] }) => m.synonyms || []) || [],
-              antonyms: [],
-            }],
-            synonyms: [],
-            antonyms: [],
-          }],
-          audio: data?.audio || "",
-          sourceUrl: "",
-        };
-        wordCache.current.set(word, { data: wordData, examples: exs });
-      } else if (data) {
-        wordCache.current.set(word, { data, examples: exs });
+    ]).then(([cambridge, data, exs, local]) => {
+      if (cambridge || data || local) {
+        const merged = mergeWordData(word, local, data, exs || [], cambridge);
+        wordCache.current.set(word, { data: merged, examples: exs || [] });
       }
       prefetching.current.delete(word);
     }).catch(() => {
@@ -227,7 +245,7 @@ export default function Learn() {
     if (!wordData) return;
     const defs: string[] = [];
     for (const m of wordData.meanings) {
-      for (const d of m.definitions.slice(0, 3)) {
+      for (const d of (m.definitions || []).slice(0, 3)) {
         if (d.definition) defs.push(d.definition);
       }
     }
@@ -259,8 +277,8 @@ export default function Learn() {
   const tiltCard = (e: React.MouseEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
     const { left, top, width, height } = el.getBoundingClientRect();
-    const x = (e.clientX - left - width / 2) / 20;
-    const y = (e.clientY - top - height / 2) / 20;
+    const x = (e.clientX - left - width / 2) / 50;
+    const y = (e.clientY - top - height / 2) / 50;
     el.style.transform = `rotateY(${x}deg) rotateX(${-y}deg)`;
   };
 
@@ -270,6 +288,14 @@ export default function Learn() {
 
   const isReviewMode = historyIndex >= 0;
   const historyWord = isReviewMode ? historyStack[historyIndex] : null;
+
+  const handleReportSubmit = (correction: WordCorrection) => {
+    const key = 'word_corrections';
+    const corrections = JSON.parse(localStorage.getItem(key) || '[]');
+    corrections.push(correction);
+    localStorage.setItem(key, JSON.stringify(corrections));
+    setShowReportError(false);
+  };
 
   const handleLearned = () => {
     if (!user || words.length === 0 || isReviewMode) return;
@@ -474,7 +500,14 @@ export default function Learn() {
                   className="glass-raised rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4"
                   style={{ transform: "translateZ(20px)" }}
                 >
-                  <div className="text-center">
+                  <div className="text-center relative">
+                    <button
+                      onClick={() => setShowReportError(true)}
+                      className="absolute top-0 right-0 px-2 py-1 rounded-lg text-xs text-orange-600 hover:bg-orange-50 transition-colors border border-orange-200"
+                      title="报告错误"
+                    >
+                      ⚠️ 反馈
+                    </button>
                     <h2 className="text-2xl sm:text-3xl font-bold text-purple-700 mb-1 sm:mb-2">
                       {wordData.word}
                     </h2>
@@ -482,6 +515,16 @@ export default function Learn() {
                   <p className="text-gray-500 text-base sm:text-lg">{wordData.phonetic}</p>
                 )}
               </div>
+
+              {/* Report Error Modal */}
+              {showReportError && wordData && (
+                <ReportError
+                  word={wordData.word}
+                  currentSource={wordData.source || 'unknown'}
+                  onClose={() => setShowReportError(false)}
+                  onSubmit={handleReportSubmit}
+                />
+              )}
 
               {wordData.audio && (
                 <div className="flex justify-center">
@@ -497,12 +540,12 @@ export default function Learn() {
                     {m.partOfSpeech}
                   </span>
                   <ul className="space-y-1 sm:space-y-1.5">
-                    {m.definitions.slice(0, 3).map((d, j) => (
+                    {(m.definitions || []).slice(0, 3).map((d, j) => (
                       <li key={j} className="text-gray-700 text-xs sm:text-sm">
                         <span className="font-medium text-purple-600">{j + 1}.</span>{" "}
                         <ClickableText text={d.definition} />
                         {cnTranslations[d.definition] && (
-                          <span className="text-gray-400 ml-1">{cnTranslations[d.definition]}</span>
+                          <span className="text-gray-800 ml-1">{cnTranslations[d.definition]}</span>
                         )}
                         {d.example && (
                           <span className="text-gray-400 block ml-4 mt-0.5 italic text-xs">
@@ -512,7 +555,7 @@ export default function Learn() {
                       </li>
                     ))}
                   </ul>
-                  {m.synonyms.length > 0 && (
+                  {(m.synonyms || []).length > 0 && (
                     <p className="text-xs sm:text-sm mt-1.5 sm:mt-2">
                       <span className="text-gray-500">近义词：</span>
                       <span className="text-purple-600">

@@ -7,7 +7,8 @@ import { fetchWord, translateLongText, translateToEnglish, fetchExampleSentences
 import { addWord, isWordAdded, addToLearning, removeWord } from "../hooks/useData";
 import { Search as SearchIcon, Languages, Database } from "lucide-react";
 import { searchAnki } from "../utils/ankiParser";
-import { searchLocalDict, preloadDict } from "../utils/localDict";
+import { searchLocalDict, searchCambridgeDict, preloadDict } from "../utils/localDict";
+import { mergeWordData } from "../utils/wordDataMerge";
 
 type Tab = "search" | "translate";
 
@@ -77,65 +78,44 @@ export default function Search() {
       lookupWord = translated;
     }
 
-    const [data, exs] = await Promise.all([
-      fetchWord(lookupWord),
-      fetchExampleSentences(lookupWord),
+    // 带超时的 Promise 包装
+    function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+      return Promise.race([
+        p,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ]);
+    }
+
+    // 本地数据（快速）+ 外部 API（8 秒超时）
+    const [cambridge, localResult, data, exs] = await Promise.all([
+      searchCambridgeDict(lookupWord),
+      searchLocalDict(lookupWord),
+      withTimeout(fetchWord(lookupWord), 8000),
+      withTimeout(fetchExampleSentences(lookupWord), 8000),
     ]);
-    if (!data) {
-      // Fallback 1: Local ECDICT dictionary
-      const localResult = await searchLocalDict(lookupWord);
-      if (localResult) {
-        const localWordData: WordData = {
-          word: localResult.word,
-          phonetic: localResult.phonetic,
-          meanings: [{
-            partOfSpeech: localResult.partOfSpeech,
-            definitions: [{
-              definition: localResult.definition || localResult.translation || "",
-              example: "",
-              synonyms: [],
-              antonyms: [],
-            }],
-            synonyms: [],
-            antonyms: [],
-          }],
-          audio: "",
-          sourceUrl: "",
-        };
-        setWordData(localWordData);
+
+    if (cambridge || localResult || data) {
+      const merged = mergeWordData(lookupWord, localResult, data, exs || [], cambridge);
+      setWordData(merged);
+      setExamples(exs || []);
+      setAnkiSource(!data && !cambridge && !!localResult);
+      setAdded(!!user && isWordAdded(user.id, merged.word));
+    } else {
+      // Fallback: Anki
+      const ankiResults = searchAnki(lookupWord);
+      if (ankiResults.length > 0) {
+        const r = ankiResults[0];
+        setWordData({
+          word: r.word, phonetic: r.phonetic || "", audio: "",
+          meanings: [{ partOfSpeech: r.partOfSpeech || "", definitions: [{ definition: r.definition || "", example: r.example || "", synonyms: [], antonyms: [] }], synonyms: [], antonyms: [] }],
+          sourceUrls: [],
+        });
         setExamples([]);
         setAnkiSource(true);
-        setAdded(!!user && isWordAdded(user.id, localResult.word));
+        setAdded(!!user && isWordAdded(user.id, r.word));
       } else {
-        // Fallback 2: Anki imported decks
-        const ankiResults = searchAnki(lookupWord);
-        if (ankiResults.length > 0) {
-          const r = ankiResults[0];
-          const ankiWordData: WordData = {
-            word: r.word,
-            phonetic: r.phonetic || "",
-            meanings: [{
-              partOfSpeech: r.partOfSpeech || "",
-              definitions: [{ definition: r.definition || "", example: r.example || "", synonyms: [], antonyms: [] }],
-              synonyms: [],
-              antonyms: [],
-            }],
-            audio: "",
-            sourceUrl: "",
-          };
-          setWordData(ankiWordData);
-          setExamples([]);
-          setAnkiSource(true);
-          setAdded(!!user && isWordAdded(user.id, r.word));
-        } else {
-          setError(`未找到 "${lookupWord}" 的相关信息`);
-        }
+        setError(`未找到 "${lookupWord}" 的相关信息`);
       }
-    } else {
-      setWordData(data);
-      setExamples(exs);
-      setAnkiSource(false);
-      setAdded(!!user && isWordAdded(user.id, data.word));
     }
     setLoading(false);
   };

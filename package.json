@@ -25,6 +25,7 @@
     "@types/react": "^19.1.9",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "cambridge-dictionary-api": "^3.0.3",
     "gh-pages": "^6.3.0",
     "surge": "^0.27.4",
     "tailwindcss": "^4.1.7",

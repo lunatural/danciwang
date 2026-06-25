@@ -7,9 +7,12 @@ interface Props {
   data: WordData;
   examples: ExampleSentence[];
   onResult: (correct: boolean) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  localTranslation?: string;
 }
 
-export default function QuizSpell({ data, examples, onResult }: Props) {
+export default function QuizSpell({ data, examples, onResult, onNext, onPrev, localTranslation }: Props) {
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [correct, setCorrect] = useState(false);
@@ -22,8 +25,12 @@ export default function QuizSpell({ data, examples, onResult }: Props) {
   const hint = word.charAt(0).toUpperCase() + "_ ".repeat(word.length - 1).trim();
 
   useEffect(() => {
-    translateToChinese(definition).then(setCnDef);
-  }, [definition]);
+    if (localTranslation) {
+      setCnDef(localTranslation);
+    } else {
+      translateToChinese(word).then(setCnDef);
+    }
+  }, [definition, localTranslation]);
 
   useEffect(() => {
     if (!submitted) inputRef.current?.focus();
@@ -34,15 +41,12 @@ export default function QuizSpell({ data, examples, onResult }: Props) {
     const isCorrect = input.trim().toLowerCase() === word.toLowerCase();
     setCorrect(isCorrect);
     setSubmitted(true);
-  };
-
-  const handleNext = () => {
-    onResult(correct);
+    onResult(isCorrect);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
-      if (submitted) handleNext();
+      if (submitted) onNext();
       else handleSubmit();
     }
   };
@@ -125,13 +129,16 @@ export default function QuizSpell({ data, examples, onResult }: Props) {
             </div>
           )}
 
-          <button
-            onClick={handleNext}
-            onKeyDown={(e) => e.key === "Enter" && handleNext()}
-            className="w-full py-3 bg-purple-500/80 text-white rounded-xl font-medium text-sm hover:bg-purple-500/90 transition-all"
-          >
-            下一题
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onPrev}
+              className="flex-1 py-2 px-3 bg-gray-200/60 hover:bg-gray-200/80 text-gray-600 rounded-xl text-xs font-medium transition-all">
+              ← 上一题
+            </button>
+            <button onClick={onNext}
+              className="flex-1 py-2 px-3 bg-purple-500/80 hover:bg-purple-500/90 text-white rounded-xl text-xs font-medium transition-all">
+              下一题 →
+            </button>
+          </div>
         </div>
       )}
     </div>

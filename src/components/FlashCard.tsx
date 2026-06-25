@@ -9,6 +9,7 @@ interface Props {
   flipped: boolean;
   onClick: () => void;
   examples?: ExampleSentence[];
+  localTranslation?: string;
 }
 
 function FlipArrow({ position }: { position: "left" | "right" }) {
@@ -35,20 +36,25 @@ const faceGlass = {
     "0 8px 30px rgba(0, 0, 0, 0.06), 0 2px 8px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.85)",
 };
 
-export default function FlashCard({ data, flipped, onClick, examples = [] }: Props) {
+export default function FlashCard({ data, flipped, onClick, examples = [], localTranslation }: Props) {
   const [cnDef, setCnDef] = useState("");
   const hintRef = useRef<HTMLParagraphElement>(null);
   const transitioningRef = useRef(false);
   const innerRef = useRef<HTMLDivElement>(null);
 
+  const word = data.word;
   const definition = data.meanings[0]?.definitions[0]?.definition || "暂无释义";
   const partOfSpeech = data.meanings[0]?.partOfSpeech || "";
   const synonyms = data.meanings[0]?.synonyms?.slice(0, 5) || [];
   const example = data.meanings[0]?.definitions[0]?.example || "";
 
   useEffect(() => {
-    translateToChinese(definition).then(setCnDef);
-  }, [definition]);
+    if (localTranslation) {
+      setCnDef(localTranslation);
+    } else {
+      translateToChinese(word).then(setCnDef);
+    }
+  }, [definition, localTranslation]);
 
   useEffect(() => {
     if (!hintRef.current) return;

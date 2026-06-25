@@ -9,9 +9,10 @@ export interface WordData {
     antonyms: string[];
   }[];
   sourceUrls: string[];
+  source?: 'cambridge' | 'free-api' | 'oxford' | 'anki' | 'unknown';
 }
 
-import { translateWithFallback } from "./translationProviders";
+import { translateWithFallback, isTranslationWarning } from "./translationProviders";
 
 const BASE = "https://api.dictionaryapi.dev/api/v2/entries/en";
 
@@ -84,13 +85,18 @@ const translationCache: Record<string, string> = {};
 
 export async function translateToChinese(text: string): Promise<string> {
   if (!text) return "";
-  if (translationCache[text]) return translationCache[text];
+  if (translationCache[text] && !isTranslationWarning(translationCache[text])) return translationCache[text];
 
   const cacheKey = `tr_zh_${text}`;
   const cached = localStorage.getItem(cacheKey);
   if (cached) {
-    translationCache[text] = cached;
-    return cached;
+    // Clean up cached warning messages
+    if (isTranslationWarning(cached)) {
+      localStorage.removeItem(cacheKey);
+    } else {
+      translationCache[text] = cached;
+      return cached;
+    }
   }
 
   // Long text: chunk for better translation success

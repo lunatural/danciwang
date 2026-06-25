@@ -1,10 +1,10 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useLocation } from "react-router-dom";
 import { getReviewSchedule, getWords, updateReviewSchedule } from "../hooks/useData";
 import { incrementDailyCount } from "../utils/dailyActivity";
 import { fetchWord, fetchExampleSentences, translateToChinese, type WordData, type ExampleSentence } from "../utils/api";
-import { searchLocalDict } from "../utils/localDict";
+import { searchLocalDict, searchCambridgeDict } from "../utils/localDict";
 import { mergeWordData } from "../utils/wordDataMerge";
 import { calculateNextReview } from "../utils/sm2";
 import FlashCard from "../components/FlashCard";
@@ -12,18 +12,11 @@ import RatingButtons from "../components/RatingButtons";
 import QuizChoice from "../components/QuizChoice";
 import QuizSpell from "../components/QuizSpell";
 import ReviewResult from "../components/ReviewResult";
+import ClickableText from "../components/ClickableText";
 import { WordTooltip } from "../components/WordTooltip";
 import { PartyPopper } from "lucide-react";
 
 type QuizMode = "choice" | "spell" | "flashcard";
-type ReviewMode = "mixed" | QuizMode;
-
-const modeLabels: Record<ReviewMode, string> = {
-  mixed: "混合",
-  choice: "选择",
-  spell: "拼写",
-  flashcard: "闪卡",
-};
 
 interface ReviewWord {
   scheduleId: string;
@@ -40,7 +33,7 @@ export default function Review() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [completed, setCompleted] = useState(false);
-  const [reviewMode, setReviewMode] = useState<ReviewMode>("mixed");
+  const [spellingEnabled, setSpellingEnabled] = useState(false);
   const [groupFilter, setGroupFilter] = useState("全部");
   const [availableGroups, setAvailableGroups] = useState<string[]>([]);
   const [allScheduled, setAllScheduled] = useState<{ id: string; word: string; group: string; nextReviewAt: string; intervalDays: number; repetitions: number }[]>([]);
@@ -48,6 +41,9 @@ export default function Review() {
   const [tooltip, setTooltip] = useState<{ word: string; anchor: DOMRect } | null>(null);
   const [loadingWord, setLoadingWord] = useState(false);
   const [flipped, setFlipped] = useState(false);
+  const [showDetail, setShowDetail] = useState(false);
+  const [lastResult, setLastResult] = useState<{ correct: boolean } | null>(null);
+  const [cnTranslation, setCnTranslation] = useState<string>("");
   const startTimeRef = useRef(Date.now());
   const resultsRef = useRef<{ word: string; correct: boolean }[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -73,11 +69,30 @@ export default function Review() {
     return ws.filter((w) => wordGroupMap.get(w.word) === group);
   };
 
-  // Assign modes based on selection (mixed = rotation, otherwise all same)
-  function assignMode(i: number): QuizMode {
-    if (reviewMode !== "mixed") return reviewMode;
-    const modes: QuizMode[] = ["choice", "spell", "flashcard"];
-    return modes[i % 3];
+  // Auto-assign mode based on SM-2 data:
+  //   - repetitions <= 1 or easeFactor < 2.0 → choice (unfamiliar)
+  //   - easeFactor >= 2.5 && repetitions >= 3 → flashcard (familiar)
+  //   - otherwise → choice (still learning)
+  //   - if spelling enabled, randomly swap 20% to spell
+  function assignMode(word: string): QuizMode {
+    // Get SM-2 data for this word
+    const schedule = getReviewSchedule(user?.id || "");
+    const item = schedule.find((s) => s.word === word);
+
+    let mode: QuizMode = "choice"; // default
+    if (item) {
+      if (item.easeFactor >= 2.5 && item.repetitions >= 3) {
+        mode = "flashcard";
+      }
+      // else stays choice
+    }
+
+    // If spelling enabled, randomly make ~25% of questions spelling
+    if (spellingEnabled && Math.random() < 0.25) {
+      mode = "spell";
+    }
+
+    return mode;
   }
 
   useEffect(() => {
@@ -94,7 +109,7 @@ export default function Review() {
         word: s.word,
         data: old?.data || null,
         examples: old?.examples || [],
-        mode: assignMode(i),
+        mode: assignMode(s.word),
       };
     });
     setAllDueWords(reviewWords);
@@ -120,7 +135,7 @@ export default function Review() {
     setAllScheduled(scheduled);
 
     setLoading(false);
-  }, [user, reviewMode]);
+  }, [user, spellingEnabled]);
 
   const changeGroup = (group: string) => {
     setGroupFilter(group);
@@ -166,22 +181,33 @@ export default function Review() {
       }
     }, 20000);
 
+    function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+      return Promise.race([
+        p,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+      ]);
+    }
+
+    // 本地数据快速加载，外部 API 加 8 秒超时
     Promise.all([
+      searchCambridgeDict(w),
       searchLocalDict(w),
-      fetchWord(w),
-      fetchExampleSentences(w),
-    ]).then(async ([local, data, exs]) => {
+      withTimeout(fetchWord(w), 8000),
+      withTimeout(fetchExampleSentences(w), 8000),
+    ]).then(async ([cambridge, local, data, exs]) => {
       clearTimeout(timeout);
       if (gen !== fetchGenRef.current) return;
       // Pre-cache Chinese translation for distractor use
-      if (local && !cnCache.current.has(w)) {
-        cnCache.current.set(w, local.translation || local.definition || "");
+      if (cambridge && !cnCache.current.has(w)) {
+        if (local && local.translation) cnCache.current.set(w, local.translation);
+      } else if (local && !cnCache.current.has(w)) {
+        if (local.translation) cnCache.current.set(w, local.translation);
       } else if (data && !cnCache.current.has(w)) {
         const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
         if (cn) cnCache.current.set(w, cn);
       }
-      const merged = (local || data)
-        ? mergeWordData(w, local, data, exs)
+      const merged = (cambridge || local || data)
+        ? mergeWordData(w, local, data, exs || [], cambridge)
         : null;
       setDueWords((prev) => {
         if (idx >= prev.length) return prev;
@@ -206,25 +232,31 @@ export default function Review() {
     if (currentIndex + 1 < dueWords.length) {
       const next = dueWords[currentIndex + 1];
       if (!next.data) {
+        function withTimeout2<T>(p: Promise<T>, ms: number): Promise<T | null> {
+          return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+        }
         Promise.all([
+          searchCambridgeDict(next.word),
           searchLocalDict(next.word),
-          fetchWord(next.word),
-          fetchExampleSentences(next.word),
-        ]).then(async ([local, data, exs]) => {
-          if (local && !cnCache.current.has(next.word)) {
-            cnCache.current.set(next.word, local.translation || local.definition || "");
+          withTimeout2(fetchWord(next.word), 8000),
+          withTimeout2(fetchExampleSentences(next.word), 8000),
+        ]).then(async ([cambridge, local, data, exs]) => {
+          if (cambridge && !cnCache.current.has(next.word)) {
+            if (local && local.translation) cnCache.current.set(next.word, local.translation);
+          } else if (local && !cnCache.current.has(next.word)) {
+            if (local.translation) cnCache.current.set(next.word, local.translation);
           } else if (data && !cnCache.current.has(next.word)) {
             const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
             if (cn) cnCache.current.set(next.word, cn);
           }
-          const merged = (local || data)
-            ? mergeWordData(next.word, local, data, exs)
+          const merged = (cambridge || local || data)
+            ? mergeWordData(next.word, local, data, exs || [], cambridge)
             : null;
           setDueWords((prev) => {
             const idx = currentIndex + 1;
             if (idx >= prev.length) return prev;
             const u = [...prev];
-            u[idx] = { ...u[idx], data: merged, examples: exs };
+            u[idx] = { ...u[idx], data: merged, examples: exs || [] };
             return u;
           });
         }).catch(() => {});
@@ -236,11 +268,19 @@ export default function Review() {
       .filter((w, i) => i !== currentIndex && !cnCache.current.has(w.word))
       .slice(0, 5);
     for (const w of unCached) {
-      fetchWord(w.word).then(async (data) => {
-        if (data) {
-          const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
-          if (cn) cnCache.current.set(w.word, cn);
+      // Try local dictionary first (free, no API call)
+      searchLocalDict(w.word).then((local) => {
+        if (local?.translation) {
+          cnCache.current.set(w.word, local.translation);
+          return;
         }
+        // Fallback to API translation
+        fetchWord(w.word).then(async (data) => {
+          if (data) {
+            const cn = await translateToChinese(data.meanings[0]?.definitions[0]?.definition || "");
+            if (cn) cnCache.current.set(w.word, cn);
+          }
+        });
       }).catch(() => {});
     }
   }, [currentIndex, dueWords.length]);
@@ -262,7 +302,16 @@ export default function Review() {
     incrementDailyCount(user.id, "reviewedCount");
 
     resultsRef.current.push({ word: current.word, correct: rating === "good" });
-    advanceWord();
+    // 翻牌模式：评分后显示详情卡片，带滑动手势
+    setLastResult({ correct: rating === "good" });
+    setShowDetail(true);
+    // 加载中文翻译
+    if (current.data) {
+      const def = current.data.meanings[0]?.definitions[0]?.definition || "";
+      if (def) {
+        translateToChinese(def).then((cn) => { if (cn) setCnTranslation(cn); });
+      }
+    }
   };
 
   const handleQuizResult = (correct: boolean) => {
@@ -278,16 +327,95 @@ export default function Review() {
     incrementDailyCount(user.id, "reviewedCount");
 
     resultsRef.current.push({ word: current.word, correct });
-    advanceWord();
+    // 不再调用 advanceWord()——QuizChoice/QuizSpell 通过 onNext/onPrev 控制跳转
   };
 
-  const advanceWord = () => {
+  // 用 ref 存最新值，避免传给子组件的回调有闭包过时问题
+  const idxRef = useRef(currentIndex);
+  idxRef.current = currentIndex;
+  const dueLenRef = useRef(dueWords.length);
+  dueLenRef.current = dueWords.length;
+
+  const advanceWord = useCallback(() => {
     setFlipped(false);
-    if (currentIndex < dueWords.length - 1) {
-      setCurrentIndex((i) => i + 1);
+    setShowDetail(false);
+    setLastResult(null);
+    setCnTranslation("");
+    const i = idxRef.current;
+    if (i < dueLenRef.current - 1) {
+      setCurrentIndex(i + 1);
     } else {
       setCompleted(true);
     }
+  }, []);
+
+  const goPrevWord = useCallback(() => {
+    const i = idxRef.current;
+    if (i > 0) {
+      setShowDetail(false);
+      setLastResult(null);
+      setCnTranslation("");
+      setCurrentIndex(i - 1);
+    }
+  }, []);
+
+  // 滑动手势（触摸 + 鼠标，带视觉反馈）
+  const [dragOffset, setDragOffset] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const detailCardRef = useRef<HTMLDivElement>(null);
+
+  const handleDragStart = (clientX: number, clientY: number) => {
+    dragStartRef.current = { x: clientX, y: clientY };
+    setIsDragging(true);
+  };
+
+  const handleDragMove = (clientX: number) => {
+    if (!dragStartRef.current) return;
+    const deltaX = clientX - dragStartRef.current.x;
+    setDragOffset(deltaX);
+  };
+
+  const handleDragEnd = (clientX: number, clientY: number) => {
+    if (!dragStartRef.current) return;
+    const deltaX = clientX - dragStartRef.current.x;
+    const deltaY = clientY - dragStartRef.current.y;
+    if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
+      deltaX < 0 ? advanceWord() : goPrevWord();
+    }
+    dragStartRef.current = null;
+    setIsDragging(false);
+    setDragOffset(0);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    handleDragStart(e.touches[0].clientX, e.touches[0].clientY);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    handleDragMove(e.touches[0].clientX);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    handleDragEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    handleDragStart(e.clientX, e.clientY);
+
+    const handleMouseMove = (ev: MouseEvent) => {
+      handleDragMove(ev.clientX);
+    };
+
+    const handleMouseUp = (ev: MouseEvent) => {
+      handleDragEnd(ev.clientX, ev.clientY);
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
   };
 
   const handleRestart = () => {
@@ -334,14 +462,28 @@ export default function Review() {
       }
     }
 
+    // 判断是否为有效的中文释义（不是英文、不是脏数据）
+    const isValidChinese = (text: string): boolean => {
+      if (!text) return false;
+      // 必须包含中文
+      if (!/[一-鿿]/.test(text)) return false;
+      // 至少 2 个中文字符
+      const chineseChars = text.match(/[一-鿿]/g) || [];
+      if (chineseChars.length < 2) return false;
+      // 过滤词典格式碎片
+      const badPatterns = /也作|缩写|英式|美式|复数|过去式|比较级|最高级|现在分词|过去分词|第三人称/;
+      if (badPatterns.test(text)) return false;
+      return true;
+    };
+
     // Score each candidate by confusability
     const scored: { word: string; translation: string; score: number }[] = [];
     for (const w of dueWords) {
       if (w.word === current.word) continue;
       const cn = cnCache.current.get(w.word);
-      const en = w.data?.meanings?.[0]?.definitions?.[0]?.definition;
-      const translation = cn || en || "";
-      if (!translation) continue;
+      // 只使用有效的中文翻译，不回退到英文
+      const translation = cn || "";
+      if (!isValidChinese(translation)) continue;
 
       const wl = w.word.toLowerCase();
       let score = 0;
@@ -417,21 +559,21 @@ export default function Review() {
         </div>
       ) : (
         <>
-          {/* Mode switcher */}
-          <div className="flex gap-1.5 sm:gap-2 flex-wrap">
-            {(Object.keys(modeLabels) as ReviewMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setReviewMode(mode)}
-                className={`px-3 sm:px-4 py-1 sm:py-1.5 rounded-full text-xs sm:text-sm font-medium transition-all ${
-                  reviewMode === mode
-                    ? "bg-purple-500/80 backdrop-blur-sm text-white"
-                    : "bg-white/50 backdrop-blur-sm text-purple-600 border border-white/40 hover:bg-white/70"
-                }`}
-              >
-                {modeLabels[mode]}
-              </button>
-            ))}
+          {/* Spelling toggle */}
+          <div className="flex gap-2 items-center">
+            <button
+              onClick={() => setSpellingEnabled(!spellingEnabled)}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-all border ${
+                spellingEnabled
+                  ? "bg-blue-500/80 text-white border-blue-400"
+                  : "bg-white/40 text-gray-400 border-gray-200 hover:border-blue-300"
+              }`}
+            >
+              拼写模式 {spellingEnabled ? "开" : "关"}
+            </button>
+            <span className="text-[10px] text-gray-400">
+              自动根据熟悉度选择 · 选择 · 熟悉
+            </span>
           </div>
 
           {availableGroups.length > 0 && (
@@ -488,8 +630,14 @@ export default function Review() {
                   />
                 </div>
                 <div className="flex justify-between text-xs text-gray-400 mt-1.5">
-                  <span>
-                    {current?.mode === "choice" ? "选择题" : current?.mode === "spell" ? "拼写题" : "闪卡"}
+                  <span className="inline-flex items-center gap-1">
+                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      current?.mode === "flashcard" ? "bg-green-100 text-green-600" :
+                      current?.mode === "spell" ? "bg-blue-100 text-blue-600" :
+                      "bg-purple-100 text-purple-600"
+                    }`}>
+                      {current?.mode === "flashcard" ? "熟悉" : current?.mode === "spell" ? "拼写" : "选择"}
+                    </span>
                   </span>
                   <span>今日剩余 {dueWords.length - currentIndex} 个</span>
                 </div>
@@ -498,36 +646,128 @@ export default function Review() {
               {loadingWord ? (
                 <div className="text-center text-gray-400 py-16 sm:py-20 text-sm">加载单词中...</div>
               ) : current?.data ? (
-                <>
-                  {current.mode === "choice" && (
-                    <QuizChoice
-                      key={current.word + currentIndex}
-                      data={current.data}
-                      examples={current.examples}
-                      distractors={distractors}
-                      onResult={handleQuizResult}
-                    />
-                  )}
-                  {current.mode === "spell" && (
-                    <QuizSpell
-                      key={current.word + currentIndex}
-                      data={current.data}
-                      examples={current.examples}
-                      onResult={handleQuizResult}
-                    />
-                  )}
-                  {current.mode === "flashcard" && (
-                    <div key={current.word + currentIndex} style={{ perspective: "1000px" }}>
-                      <FlashCard
-                        data={current.data}
-                        flipped={flipped}
-                        onClick={() => setFlipped(!flipped)}
-                        examples={current.examples}
-                      />
-                      {flipped && <RatingButtons onRate={handleRate} />}
+                /* ── 翻牌模式：评分后显示详情卡片（带滑动手势） ── */
+                (showDetail && current.mode === "flashcard") ? (
+                  <div
+                    ref={detailCardRef}
+                    onTouchStart={handleTouchStart}
+                    onTouchMove={handleTouchMove}
+                    onTouchEnd={handleTouchEnd}
+                    onMouseDown={handleMouseDown}
+                    className="glass-raised rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4 relative select-none cursor-grab active:cursor-grabbing"
+                    style={{
+                      transform: `translateX(${dragOffset}px)`,
+                      opacity: isDragging ? 0.85 : 1,
+                      transition: isDragging ? "none" : "transform 0.3s ease, opacity 0.3s ease",
+                    }}
+                  >
+                    {/* 评分结果 */}
+                    {lastResult && (
+                      <div className={`text-center text-sm font-medium py-1 rounded-lg ${lastResult.correct ? "bg-green-100 text-green-600" : "bg-red-100 text-red-500"}`}>
+                        {lastResult.correct ? "✅ 已掌握" : "📝 需要复习"}
+                      </div>
+                    )}
+
+                    <div className="text-center">
+                      <h2 className="text-2xl sm:text-3xl font-bold text-purple-700 mb-1">{current.data.word}</h2>
+                      {current.data.phonetic && (
+                        <p className="text-gray-500 text-sm sm:text-base">{current.data.phonetic}</p>
+                      )}
                     </div>
-                  )}
-                </>
+
+                    {current.data.audio && (
+                      <div className="flex justify-center">
+                        <audio key={current.data.word} controls className="h-8">
+                          <source src={current.data.audio} type="audio/mpeg" />
+                        </audio>
+                      </div>
+                    )}
+
+                    {current.data.meanings.map((m, i) => (
+                      <div key={i}>
+                        <span className="inline-block bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs sm:text-sm font-medium mb-1.5">{m.partOfSpeech}</span>
+                        <ul className="space-y-1 sm:space-y-1.5">
+                          {(m.definitions || []).slice(0, 3).map((d, j) => (
+                            <li key={j} className="text-gray-700 text-xs sm:text-sm">
+                              <span className="font-medium text-purple-600">{j + 1}.</span> <ClickableText text={d.definition} />
+                              {cnTranslation && j === 0 && <span className="text-gray-800 ml-1">{cnTranslation}</span>}
+                              {d.example && <span className="text-gray-400 block ml-4 mt-0.5 italic text-xs">"<ClickableText text={d.example} />"</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+
+                    {current.examples.length > 0 && (
+                      <div className="bg-blue-50/60 backdrop-blur-sm rounded-xl p-3 sm:p-4 border border-blue-100/50">
+                        <p className="text-xs sm:text-sm font-medium text-blue-700 mb-2">例句</p>
+                        <ul className="space-y-2">
+                          {current.examples.slice(0, 3).map((ex, i) => (
+                            <li key={i} className="text-xs sm:text-sm">
+                              <p className="text-gray-800 italic">"<ClickableText text={ex.english} />"</p>
+                              {ex.chinese && <p className="text-blue-600 mt-0.5 ml-2">{ex.chinese}</p>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between items-center pt-2 text-xs text-gray-400">
+                      <span>← 右滑上一题</span>
+                      <span>左滑下一题 →</span>
+                    </div>
+
+                    <div className="flex gap-2 pt-1">
+                      <button onClick={goPrevWord} disabled={currentIndex <= 0}
+                        className="flex-1 px-4 py-2 bg-gray-200/60 hover:bg-gray-200/80 disabled:opacity-40 rounded-xl text-sm text-gray-600 transition-all">
+                        ← 上一题
+                      </button>
+                      <button onClick={advanceWord}
+                        className="flex-1 px-4 py-2 bg-purple-500/80 hover:bg-purple-500/90 text-white rounded-xl text-sm transition-all">
+                        下一题 →
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ── 答题视图 ── */
+                  <>
+                    {current.mode === "choice" && (
+                      <QuizChoice
+                        key={current.word + currentIndex}
+                        data={current.data}
+                        examples={current.examples}
+                        distractors={distractors}
+                        onResult={handleQuizResult}
+                        onNext={advanceWord}
+                        onPrev={goPrevWord}
+                        localTranslation={cnCache.current.get(current.word)}
+                      />
+                    )}
+                    {current.mode === "spell" && (
+                      <QuizSpell
+                        key={current.word + currentIndex}
+                        data={current.data}
+                        examples={current.examples}
+                        onResult={handleQuizResult}
+                        onNext={advanceWord}
+                        onPrev={goPrevWord}
+                        localTranslation={cnCache.current.get(current.word)}
+                      />
+                    )}
+                    {current.mode === "flashcard" && (
+                      <div key={current.word + currentIndex} style={{ perspective: "1000px" }}>
+                        <FlashCard
+                          data={current.data}
+                          flipped={flipped}
+                          onClick={() => setFlipped(!flipped)}
+                          examples={current.examples}
+                          localTranslation={cnCache.current.get(current.word)}
+                        />
+                        {flipped && <RatingButtons onRate={handleRate} />}
+                      </div>
+                    )}
+                  </>
+                )
               ) : (
                 <div className="text-center text-gray-400 py-16 sm:py-20 text-sm">加载单词中...</div>
               )}

@@ -2,7 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { HashRouter } from "react-router-dom";
 import App from "./App";
+import { preloadDict } from "./utils/localDict";
 import "./index.css";
+
+// Preload Oxford dictionary immediately (don't wait for app render)
+preloadDict();
 
 // Register Service Worker for PWA
 if ("serviceWorker" in navigator) {
