@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.4",
@@ -26,8 +24,6 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "cambridge-dictionary-api": "^3.0.3",
-    "gh-pages": "^6.3.0",
-    "surge": "^0.27.4",
     "tailwindcss": "^4.1.7",
     "typescript": "~5.8.3",
     "vite": "^6.3.5",
