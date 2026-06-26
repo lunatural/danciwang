@@ -31,7 +31,12 @@ export default function Login() {
     try {
       const err = await signIn(email, password);
       if (err) {
-        setError(err.message || "登录失败");
+        const msg = err.message || "";
+        if (msg.toLowerCase().includes("email not confirmed") || msg.includes("邮箱未验证")) {
+          setError("邮箱尚未验证，请检查收件箱（含垃圾邮件），点击验证链接后登录");
+        } else {
+          setError(msg || "登录失败");
+        }
       } else {
         navigate("/");
       }
@@ -104,8 +109,13 @@ export default function Login() {
         </button>
 
         <p className="text-sm text-gray-400 text-center mt-5">
+          <Link to="/reset-password" className="text-purple-500 hover:text-purple-600 transition-colors">
+            忘记密码？
+          </Link>
+        </p>
+        <p className="text-sm text-gray-400 text-center mt-2">
           还没有账号？{" "}
-          <Link to="/register" className="text-purple-500 hover:text-purple-600 transition-colors">
+          <Link to="/register" className="text-purple-600 hover:underline transition-colors">
             注册
           </Link>
         </p>

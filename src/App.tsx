@@ -9,6 +9,8 @@ import Search from "./pages/Search";
 import Learn from "./pages/Learn";
 import WordList from "./pages/WordList";
 import Review from "./pages/Review";
+import Feedback from "./pages/Feedback";
+import ResetPassword from "./pages/ResetPassword";
 import { pullAllFromCloud, flushSyncQueue, mergeCloudIntoLocal, pushWordsToCloud, pushLearningToCloud, pushScheduleToCloud, pushDailyHistoryToCloud } from "./hooks/useSync";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 
@@ -188,6 +190,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route
         element={
           <Protected>
@@ -200,6 +203,7 @@ export default function App() {
         <Route path="/learn" element={<Learn />} />
         <Route path="/words" element={<WordList />} />
         <Route path="/review" element={<Review />} />
+        <Route path="/feedback" element={<Feedback />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

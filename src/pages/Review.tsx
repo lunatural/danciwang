@@ -466,13 +466,13 @@ export default function Review() {
     // 判断是否为有效的中文释义（不是英文、不是脏数据）
     const isValidChinese = (text: string): boolean => {
       if (!text) return false;
+      // 不能包含拉丁字母
+      if (/[a-zA-Z]/.test(text)) return false;
       // 必须包含中文
-      if (!/[一-鿿]/.test(text)) return false;
-      // 至少 2 个中文字符
       const chineseChars = text.match(/[一-鿿]/g) || [];
       if (chineseChars.length < 2) return false;
       // 过滤词典格式碎片
-      const badPatterns = /也作|缩写|英式|美式|复数|过去式|比较级|最高级|现在分词|过去分词|第三人称/;
+      const badPatterns = /也作|亦作|也用于|缩写|英式|美式|复数|过去式|比较级|最高级|现在分词|过去分词|第三人称|以及|也指|参见|亦见|频率较低|频率较高|正式|非正式|口语|书面|古语|俚语|粗话|比喻|谚语|用于/;
       if (badPatterns.test(text)) return false;
       return true;
     };

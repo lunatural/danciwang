@@ -77,19 +77,21 @@ function cleanPartOfSpeech(raw: string): string {
 }
 
 // Check if a "translation" is actually an Oxford style note (not a real Chinese translation)
-const STYLE_NOTES = [
-  "英式英语也作", "美式英语也作", "英式也作", "美式也作",
-  "也作", "亦作", "非正式用语", "正式用语", "老式用法",
-  "旧式用法", "古用法", "俚语", "粗话", "比喻", "谚语",
-  "see also", "also", "compare", "cf.",
-];
+const STYLE_KEYWORDS = /\b(?:英式|美式|英国|美国|也作|亦作|也用于|非正式|正式|口语|书面|古语|古用法|老式|旧式|旧用法|俚语|粗话|粗俗|比喻|谚语|频率较低|频率较高|用于|亦用于|参见|亦见|缩写|复数|单数|不可数|可数|及物|不及物|过去式|过去分词|现在分词|比较级|最高级|第三人称|see also|also|compare|cf\.|esp\.|usu\.)\b/;
+
+const LATIN_CHARS = /[a-zA-Z]/;
+const CHINESE_CHARS = /[一-鿿]/;
+
 function isStyleNote(translation: string): boolean {
   if (!translation) return false;
   const t = translation.trim();
-  // If translation is purely a style/language note with no actual meaning
-  for (const note of STYLE_NOTES) {
-    if (t === note || t.startsWith(note)) return true;
-  }
+  // Too short to be a real translation
+  const chineseChars = (t.match(CHINESE_CHARS) || []).length;
+  if (chineseChars < 1) return true;
+  // Contains Latin characters mixed with style keywords → likely metadata
+  if (LATIN_CHARS.test(t)) return true;
+  // If more than half the text is style keywords, it's not a real translation
+  if (STYLE_KEYWORDS.test(t) && chineseChars < 4) return true;
   return false;
 }
 

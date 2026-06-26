@@ -2,6 +2,23 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
+// 邮箱格式校验
+function isValidEmail(email: string): string | null {
+  if (!email) return "请输入邮箱";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "邮箱格式不正确";
+  const blockedDomains = [
+    "mailinator.com", "guerrillamail.com", "10minutemail.com",
+    "tempmail.com", "throwaway.email", "yopmail.com",
+    "sharklasers.com", "trashmail.com", "temp-mail.org",
+    "fakeinbox.com", "tempinbox.com", "moakt.com",
+  ];
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (domain && blockedDomains.some((d) => domain.endsWith(d))) {
+    return "不支持临时邮箱，请使用个人邮箱";
+  }
+  return null;
+}
+
 export default function Register() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,24 +32,29 @@ export default function Register() {
     e.preventDefault();
     setError("");
     setSuccess("");
-    if (password.length < 6) {
-      setError("密码至少6位");
-      return;
-    }
+
+    const emailError = isValidEmail(email);
+    if (emailError) { setError(emailError); return; }
+    if (password.length < 6) { setError("密码至少6位"); return; }
+
     setLoading(true);
     try {
       const err = await signUp(email, password);
       if (err) {
-        // If the message mentions "检查邮箱", it's not really an error
-        if (err.message && err.message.includes("检查邮箱")) {
+        if (err.message && (
+          err.message.includes("验证邮件") ||
+          err.message.includes("检查邮箱") ||
+          err.message.includes("验证") ||
+          err.message.includes("确认")
+        )) {
           setSuccess(err.message);
-          setTimeout(() => navigate("/login"), 3000);
+          setTimeout(() => navigate("/login"), 4000);
         } else {
           setError(err.message || "注册失败");
         }
       } else {
-        setSuccess("注册成功！正在跳转...");
-        setTimeout(() => navigate("/"), 1000);
+        setSuccess("验证邮件已发送，请检查邮箱后登录");
+        setTimeout(() => navigate("/login"), 3000);
       }
     } catch {
       setError("注册失败，请检查网络连接");
@@ -44,9 +66,7 @@ export default function Register() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-purple-50 px-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-purple-700 text-center mb-6">
-          单词大师
-        </h1>
+        <h1 className="text-2xl font-bold text-purple-700 text-center mb-6">单词大师</h1>
         <h2 className="text-lg text-gray-600 text-center mb-6">注册</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <input
@@ -79,9 +99,7 @@ export default function Register() {
         </form>
         <p className="text-sm text-gray-500 text-center mt-4">
           已有账号？{" "}
-          <Link to="/login" className="text-purple-600 hover:underline">
-            登录
-          </Link>
+          <Link to="/login" className="text-purple-600 hover:underline">登录</Link>
         </p>
       </div>
     </div>

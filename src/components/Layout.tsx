@@ -2,20 +2,27 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useOnlineStatus } from "../hooks/useOnlineStatus";
-import { House, Search, BookOpen, ClipboardList, RefreshCw, Image, X, Cloud, CloudOff } from "lucide-react";
+import { useMemo } from "react";
+import { House, Search, BookOpen, ClipboardList, RefreshCw, MessageSquare, Image, X, Cloud, CloudOff } from "lucide-react";
 import gsap from "gsap";
 import { saveBackground, loadBackground, removeBackground, createBgUrl, type StoredBg } from "../utils/backgroundStore";
 import InstallPWA from "./InstallPWA";
 
-const navItems = [
+const ADMIN_EMAILS = ["2561841885@qq.com"];
+
+const BASE_NAV = [
   { to: "/", label: "首页", Icon: House },
   { to: "/search", label: "查单词", Icon: Search },
   { to: "/learn", label: "学习", Icon: BookOpen },
   { to: "/review", label: "复习", Icon: RefreshCw },
   { to: "/words", label: "单词本", Icon: ClipboardList },
 ];
+const ADMIN_NAV = [
+  ...BASE_NAV,
+  { to: "/feedback", label: "反馈", Icon: MessageSquare },
+];
 
-function MobileNav({ items }: { items: typeof navItems }) {
+function MobileNav({ items }: { items: { to: string; label: string; Icon: any }[] }) {
   const location = useLocation();
   const pillRef = useRef<HTMLDivElement>(null);
   const prevIndex = useRef(0);
@@ -93,6 +100,9 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const isAdmin = user?.email && ADMIN_EMAILS.includes(user.email.toLowerCase());
+  const navItems = useMemo(() => isAdmin ? ADMIN_NAV : BASE_NAV, [isAdmin]);
   const indicatorRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const customVideoRef = useRef<HTMLVideoElement>(null);

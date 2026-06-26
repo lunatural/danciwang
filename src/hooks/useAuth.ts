@@ -141,21 +141,10 @@ export function useAuth() {
       return { message: translateAuthError(error.message) } as unknown as Error;
     }
 
-    // If session is available, email confirmation is disabled — auto sign in
-    if (data.session && data.user) {
-      const newUser: AuthUser = {
-        id: data.user.id,
-        email: data.user.email || email,
-        provider: "supabase",
-      };
-      localStorage.setItem("vocab_current_user", JSON.stringify(newUser));
-      setUser(newUser);
-      return null;
-    }
-
-    // Email confirmation is required
+    // 不管 Supabase 是否返回 session，强制要求邮箱验证后登录
+    // 用户必须先验证邮箱，再通过 signIn 登录
     return {
-      message: "注册成功！请检查邮箱并点击确认链接，然后返回登录。",
+      message: "验证邮件已发送至 " + email + "，请检查收件箱（含垃圾邮件），点击邮件中的验证链接后返回登录。",
     } as unknown as Error;
   };
 
@@ -170,6 +159,11 @@ export function useAuth() {
     }
 
     if (data.user) {
+      // 检查邮箱是否已验证
+      if (!data.user.email_confirmed_at && !data.user.confirmed_at) {
+        return { message: "邮箱尚未验证，请检查收件箱（含垃圾邮件）点击验证链接后重试" } as unknown as Error;
+      }
+
       const authUser: AuthUser = {
         id: data.user.id,
         email: data.user.email || email,
