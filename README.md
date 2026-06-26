@@ -98,6 +98,56 @@ npm run build    # 生产构建
 node scripts/fetchCambridgeDict.js
 ```
 
+## 数据库
+
+### Supabase 认证配置
+
+```sql
+-- 邮箱验证码表（可选，配合自定义验证码流程使用）
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  email TEXT NOT NULL,
+  code TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_ver_lookup 
+  ON email_verifications(email, code, expires_at);
+```
+
+### 认证配置 (Supabase Dashboard)
+
+| 设置项 | 值 | 说明 |
+|--------|-----|------|
+| Site URL | `https://danciwang.pages.dev` | 站点地址 |
+| Confirm email | ✅ 开启 | 强制邮箱验证 |
+| Custom SMTP | QQ 邮箱 | smtp.qq.com:465 |
+| JWT Expiry | 3600s (1小时) | 登录令牌有效期 |
+| OTP Expiry | 600s (10分钟) | 验证码/重置链接有效期 |
+| CAPTCHA Provider | Turnstile | 机器人检测 |
+
+### Cloudflare Pages 环境变量
+
+| 变量名 | 说明 |
+|--------|------|
+| `SUPABASE_URL` | Supabase 项目 URL |
+| `SUPABASE_SERVICE_KEY` | Supabase service_role 密钥 |
+| `RESEND_API_KEY` | Resend 邮件 API 密钥（可选） |
+
+```bash
+# 设置环境变量
+echo "xxx" | npx wrangler pages secret put SUPABASE_URL --project-name=danciwang
+echo "xxx" | npx wrangler pages secret put SUPABASE_SERVICE_KEY --project-name=danciwang
+```
+
+### Cloudflare Pages Functions
+
+| 文件 | 功能 |
+|------|------|
+| `functions/api/check-email.ts` | 检查邮箱是否已注册（调用 Supabase Admin API） |
+
 ## 部署
 
 ```bash
