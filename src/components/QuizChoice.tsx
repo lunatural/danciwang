@@ -142,9 +142,7 @@ export default function QuizChoice({ data, examples, distractors, onResult, onNe
     const el = detailRef.current;
     // 移除 CSS 动画类，释放 transform 控制权给 GSAP
     if (el) {
-      el.classList.remove("animate-fade-in-up");
-      el.style.animation = "none";
-      el.offsetHeight; // 强制重排，确保 animation 已移除
+      el.style.animation = "none"; // 停止入场动画，交给 GSAP 控制
       gsap.set(el, { transformOrigin: "center center" });
     }
     dragStartRef.current = { x: clientX, y: clientY };
@@ -285,9 +283,10 @@ export default function QuizChoice({ data, examples, distractors, onResult, onNe
       {showDetail && (
         <div
           ref={detailRef}
-          className="glass rounded-2xl p-4 sm:p-5 space-y-3 animate-fade-in-up select-none cursor-grab active:cursor-grabbing"
+          className="glass rounded-2xl p-4 sm:p-5 space-y-3 select-none cursor-grab active:cursor-grabbing"
           style={{
             opacity: isDragging ? 0.7 : 1,
+            animation: "fadeInUp 0.35s ease-out both",
           }}
           {...touchHandlers}
           {...mouseHandlers}
@@ -296,7 +295,7 @@ export default function QuizChoice({ data, examples, distractors, onResult, onNe
             <p className="text-center text-green-600 font-medium text-sm">✓ 正确！</p>
           ) : (
             <p className="text-center text-red-500 font-medium text-sm">
-              正确答案是 <span className="font-bold">{options[correctIdx]}</span>
+              正确答案是 <span className="font-bold">{options[correctIdx] || options[0] || ""}</span>
             </p>
           )}
 

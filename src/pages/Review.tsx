@@ -317,6 +317,7 @@ export default function Review() {
   const handleQuizResult = (correct: boolean) => {
     if (!user) return;
     const current = dueWords[currentIndex];
+    if (!current) return;
     const schedule = getReviewSchedule(user.id);
     const item = schedule.find((s) => s.id === current.scheduleId);
     if (!item) return;
