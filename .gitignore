@@ -5,3 +5,5 @@ dist
 public/fetch-progress.txt
 词库/
 错误分析/
+.env
+.env.local

@@ -4,7 +4,7 @@ import { useAuth } from "../hooks/useAuth";
 import { MessageSquare, Trash2, ChevronDown, ChevronUp, CheckCircle2, Circle, Shield } from "lucide-react";
 
 // 管理员邮箱列表
-const ADMIN_EMAILS = ["2561841885@qq.com"];
+const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAILS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
 
 // 扩展类型（兼容旧的没有 resolved 字段的记录）
 interface FeedbackEntry {

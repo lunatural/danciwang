@@ -8,7 +8,7 @@ import gsap from "gsap";
 import { saveBackground, loadBackground, removeBackground, createBgUrl, type StoredBg } from "../utils/backgroundStore";
 import InstallPWA from "./InstallPWA";
 
-const ADMIN_EMAILS = ["2561841885@qq.com"];
+const ADMIN_EMAILS = (import.meta.env.VITE_ADMIN_EMAILS || "").split(",").map((s: string) => s.trim()).filter(Boolean);
 
 const BASE_NAV = [
   { to: "/", label: "首页", Icon: House },
