@@ -11,6 +11,18 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>单词大师 - 智能单词记忆</title>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
+    <!-- 保存 Supabase auth hash，防止 HashRouter 覆盖 -->
+    <script>
+      (function() {
+        var h = window.location.hash;
+        if (h && (h.includes('access_token=') || h.includes('type=recovery'))) {
+          window.__SUPABASE_AUTH_HASH = h;
+          // 先把 hash 清掉，让 HashRouter 正常匹配默认路由
+          window.history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+      })();
+    </script>
   </head>
   <body class="bg-purple-50 min-h-screen">
     <div id="root"></div>

@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
-// 邮箱格式校验
+const TURNSTILE_SITE_KEY = "0x4AAAAAADrJ9BVPxHj4LpqQ";
+
 function isValidEmail(email: string): string | null {
   if (!email) return "请输入邮箱";
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return "邮箱格式不正确";
@@ -19,6 +20,13 @@ function isValidEmail(email: string): string | null {
   return null;
 }
 
+declare global {
+  interface Window {
+    turnstile: any;
+    _turnstileToken: string | null;
+  }
+}
+
 export default function Register() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,6 +35,28 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const { signUp } = useAuth();
   const navigate = useNavigate();
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const turnstileId = useRef<string | null>(null);
+
+  useEffect(() => {
+    window._turnstileToken = null;
+    let attempts = 0;
+    const tryRender = () => {
+      const el = turnstileRef.current;
+      if (el && window.turnstile) {
+        turnstileId.current = window.turnstile.render(el, {
+          sitekey: TURNSTILE_SITE_KEY,
+          callback: (token: string) => { window._turnstileToken = token; },
+          "expired-callback": () => { window._turnstileToken = null; },
+          theme: "light",
+        });
+      } else if (attempts < 20) {
+        attempts++;
+        setTimeout(tryRender, 200);
+      }
+    };
+    tryRender();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,15 +67,23 @@ export default function Register() {
     if (emailError) { setError(emailError); return; }
     if (password.length < 6) { setError("密码至少6位"); return; }
 
+    const token = window._turnstileToken;
+    if (!token) {
+      setError("请完成人机验证");
+      return;
+    }
+
     setLoading(true);
     try {
-      const err = await signUp(email, password);
+      const err = await signUp(email, password, token);
+      window._turnstileToken = null;
+      if (window.turnstile && turnstileId.current) {
+        window.turnstile.reset(turnstileId.current);
+      }
       if (err) {
         if (err.message && (
           err.message.includes("验证邮件") ||
-          err.message.includes("检查邮箱") ||
-          err.message.includes("验证") ||
-          err.message.includes("确认")
+          err.message.includes("检查邮箱")
         )) {
           setSuccess(err.message);
           setTimeout(() => navigate("/login"), 4000);
@@ -87,6 +125,10 @@ export default function Register() {
             disabled={loading}
             className="w-full px-4 py-3 rounded-xl border border-purple-200 focus:outline-none focus:ring-2 focus:ring-purple-400 disabled:opacity-50"
           />
+
+          {/* Turnstile */}
+          <div ref={turnstileRef} className="flex justify-center" />
+
           {error && <p className="text-red-500 text-sm text-center">{error}</p>}
           {success && <p className="text-green-500 text-sm text-center">{success}</p>}
           <button

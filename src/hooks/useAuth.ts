@@ -80,6 +80,31 @@ export function useAuth() {
     init();
 
     // Listen for auth state changes (token refresh, etc.)
+    // 如果 index.html 保存了 auth hash，手动解析并设 session
+    const savedHash = (window as any).__SUPABASE_AUTH_HASH as string | undefined;
+    if (savedHash) {
+      delete (window as any).__SUPABASE_AUTH_HASH;
+      const params = new URLSearchParams(savedHash.replace(/^#/, ""));
+      const accessToken = params.get("access_token");
+      const refreshToken = params.get("refresh_token");
+      const type = params.get("type");
+      if (accessToken && refreshToken) {
+        supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        }).then(({ data }) => {
+          if (data.session?.user && type === "recovery") {
+            setUser({
+              id: data.session.user.id,
+              email: data.session.user.email || "",
+              provider: "supabase",
+            });
+            window.location.hash = "#/reset-password";
+          }
+        });
+      }
+    }
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         if (session?.user) {
@@ -90,8 +115,11 @@ export function useAuth() {
           };
           localStorage.setItem("vocab_current_user", JSON.stringify(su));
           setUser(su);
+          // 密码重置链接：检测到恢复事件后重定向到重置密码页
+          if (_event === "PASSWORD_RECOVERY") {
+            window.location.hash = "#/reset-password";
+          }
         } else if (_event === "SIGNED_OUT" || _event === "TOKEN_REFRESHED") {
-          // Session ended — clear cache
           if (_event === "SIGNED_OUT") {
             localStorage.removeItem("vocab_current_user");
             setUser(null);
@@ -131,27 +159,37 @@ export function useAuth() {
     }
   }
 
-  const signUp = async (email: string, password: string) => {
+  const signUp = async (email: string, password: string, captchaToken?: string) => {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
+      options: captchaToken ? { captchaToken } : undefined,
     });
 
     if (error) {
       return { message: translateAuthError(error.message) } as unknown as Error;
     }
 
+    // 记录已注册的邮箱到本地，供忘记密码时检测
+    try {
+      const registered = JSON.parse(localStorage.getItem("registered_emails") || "[]");
+      if (!registered.includes(email.toLowerCase())) {
+        registered.push(email.toLowerCase());
+        localStorage.setItem("registered_emails", JSON.stringify(registered));
+      }
+    } catch {}
+
     // 不管 Supabase 是否返回 session，强制要求邮箱验证后登录
-    // 用户必须先验证邮箱，再通过 signIn 登录
     return {
       message: "验证邮件已发送至 " + email + "，请检查收件箱（含垃圾邮件），点击邮件中的验证链接后返回登录。",
     } as unknown as Error;
   };
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string, captchaToken?: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
+      options: captchaToken ? { captchaToken } : undefined,
     });
 
     if (error) {

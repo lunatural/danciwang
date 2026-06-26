@@ -3,6 +3,15 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import gsap from "gsap";
 
+const TURNSTILE_SITE_KEY = "0x4AAAAAADrJ9BVPxHj4LpqQ";
+
+declare global {
+  interface Window {
+    turnstile: any;
+    _turnstileToken: string | null;
+  }
+}
+
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -11,25 +20,42 @@ export default function Login() {
   const { signIn, signInAsGuest } = useAuth();
   const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const turnstileId = useRef<string | null>(null);
 
   useEffect(() => {
     if (cardRef.current) {
       gsap.from(cardRef.current, {
-        opacity: 0,
-        y: 40,
-        scale: 0.95,
-        duration: 0.6,
-        ease: "power3.out",
+        opacity: 0, y: 40, scale: 0.95, duration: 0.6, ease: "power3.out",
       });
     }
+  }, []);
+
+  useEffect(() => {
+    window._turnstileToken = null;
+    let a = 0;
+    const tr = () => {
+      const el = turnstileRef.current;
+      if (el && window.turnstile) {
+        turnstileId.current = window.turnstile.render(el, {
+          sitekey: TURNSTILE_SITE_KEY,
+          callback: (t: string) => { window._turnstileToken = t; },
+          "expired-callback": () => { window._turnstileToken = null; },
+          theme: "light",
+        });
+      } else if (a < 30) { a++; setTimeout(tr, 200); }
+    };
+    tr();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    const token = window._turnstileToken;
+    if (!token) { setError("请完成人机验证"); return; }
     setLoading(true);
     try {
-      const err = await signIn(email, password);
+      const err = await signIn(email, password, token);
       if (err) {
         const msg = err.message || "";
         if (msg.toLowerCase().includes("email not confirmed") || msg.includes("邮箱未验证")) {
@@ -50,36 +76,18 @@ export default function Login() {
   return (
     <div className="min-h-[80vh] flex items-center justify-center px-4 relative z-10">
       <div ref={cardRef} className="glass rounded-3xl p-8 w-full max-w-sm">
-        <h1 className="text-2xl font-bold text-purple-600 text-center mb-2">
-          单词大师
-        </h1>
+        <h1 className="text-2xl font-bold text-purple-600 text-center mb-2">单词大师</h1>
         <h2 className="text-sm text-gray-400 text-center mb-8">登录</h2>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="email"
-            placeholder="邮箱"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            disabled={loading}
-            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50"
-          />
-          <input
-            type="password"
-            placeholder="密码"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            disabled={loading}
-            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50"
-          />
+          <input type="email" placeholder="邮箱" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50" />
+          <input type="password" placeholder="密码" value={password} onChange={(e) => setPassword(e.target.value)} required disabled={loading}
+            className="w-full px-4 py-3 rounded-xl bg-white/50 backdrop-blur-sm border border-white/50 focus:outline-none focus:ring-2 focus:ring-purple-400/50 focus:bg-white/70 transition-all text-sm disabled:opacity-50" />
+          <div ref={turnstileRef} className="flex justify-center" />
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-3 bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white rounded-xl font-medium transition-all text-sm disabled:opacity-60"
-          >
+          <button type="submit" disabled={loading}
+            className="w-full py-3 bg-purple-500/80 backdrop-blur-sm hover:bg-purple-500/90 text-white rounded-xl font-medium transition-all text-sm disabled:opacity-60">
             {loading ? "登录中..." : "登录"}
           </button>
         </form>
@@ -90,34 +98,17 @@ export default function Login() {
           <div className="flex-1 h-px bg-gray-200" />
         </div>
 
-        <button
-          onClick={async () => {
-            setLoading(true);
-            try {
-              await signInAsGuest();
-              navigate("/");
-            } catch {
-              setError("游客登录失败");
-            } finally {
-              setLoading(false);
-            }
-          }}
+        <button onClick={async () => { setLoading(true); try { await signInAsGuest(); navigate("/"); } catch { setError("游客登录失败"); } finally { setLoading(false); } }}
           disabled={loading}
-          className="w-full py-3 bg-white/40 backdrop-blur-sm hover:bg-white/60 text-gray-600 rounded-xl font-medium transition-all text-sm border border-white/40 disabled:opacity-50"
-        >
+          className="w-full py-3 bg-white/40 backdrop-blur-sm hover:bg-white/60 text-gray-600 rounded-xl font-medium transition-all text-sm border border-white/40 disabled:opacity-50">
           游客登录
         </button>
 
         <p className="text-sm text-gray-400 text-center mt-5">
-          <Link to="/reset-password" className="text-purple-500 hover:text-purple-600 transition-colors">
-            忘记密码？
-          </Link>
+          <Link to="/reset-password" className="text-purple-500 hover:text-purple-600 transition-colors">忘记密码？</Link>
         </p>
         <p className="text-sm text-gray-400 text-center mt-2">
-          还没有账号？{" "}
-          <Link to="/register" className="text-purple-600 hover:underline transition-colors">
-            注册
-          </Link>
+          还没有账号？{" "}<Link to="/register" className="text-purple-600 hover:underline transition-colors">注册</Link>
         </p>
       </div>
     </div>
