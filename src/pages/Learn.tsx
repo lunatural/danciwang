@@ -77,8 +77,8 @@ export default function Learn() {
     [wordGroupMap]
   );
 
-  // 标记用户是否手动排序过，防止被 syncVersion 变化重置
-  const userHasSorted = useRef(false);
+  // 防止同步刷新时重置单词列表
+  const initialLoadDone = useRef(false);
 
   useEffect(() => {
     if (!user) return;
@@ -95,8 +95,9 @@ export default function Learn() {
     setOriginalWords(filtered);
     setLoading(false);
 
-    // 只在首次加载或用户未手动排序时重置单词列表
-    if (!userHasSorted.current) {
+    // 只在首次加载时设置单词列表，同步刷新不重置
+    if (!initialLoadDone.current) {
+      initialLoadDone.current = true;
       setWords(filtered);
       if (filtered.length > 0) {
         setCurrentIndex(0);
@@ -133,7 +134,6 @@ export default function Learn() {
     const filtered = filterByGroup(allLearningWords, group);
     setOriginalWords(filtered);
     const sorted = sortMode === "default" ? filtered : sortWords(filtered, sortMode);
-    userHasSorted.current = true;
     setWords(sorted);
     setCurrentIndex(0);
     setWordData(null);
@@ -144,7 +144,6 @@ export default function Learn() {
     (mode: SortMode) => {
       setSortMode(mode);
       const sorted = sortWords(originalWords, mode);
-      userHasSorted.current = true;
       setWords(sorted);
       setCurrentIndex(0);
       setWordData(null);

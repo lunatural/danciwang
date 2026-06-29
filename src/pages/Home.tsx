@@ -117,7 +117,7 @@ export default function Home() {
   const todayTotal = todayStats.learnedCount + todayStats.reviewedCount;
 
   return (
-    <div ref={containerRef} className="space-y-3 sm:space-y-8 relative z-10">
+    <div ref={containerRef} className="space-y-3 sm:space-y-8 relative z-10" style={{ paddingBottom: "max(80px, calc(60px + env(safe-area-inset-bottom)))" }}>
       <h1 className="text-sm sm:text-2xl font-bold text-purple-700">
         你好，{user?.email || ""}
       </h1>
@@ -125,13 +125,13 @@ export default function Home() {
       {/* Stats cards */}
       <div className="flex flex-col sm:flex-row gap-2 sm:gap-5">
         {statCards.map((card, i) => (
-          <div key={i} className="flex-1 overflow-hidden sm:overflow-visible" style={{ perspective: "1000px", padding: isDesktop ? "0" : "2px" }}>
+          <div key={i} className="flex-1" style={{ perspective: isDesktop ? "1000px" : "none" }}>
             <Link
               to={card.path}
               onMouseMove={tiltCard}
               onMouseLeave={tiltReset}
-              className="home-card group relative block h-28 sm:h-72 rounded-2xl overflow-hidden sm:overflow-visible transition-[transform,box-shadow] duration-200 ease-linear"
-              style={{ transformStyle: "preserve-3d" }}
+              className="home-card group relative block h-24 sm:h-72 rounded-2xl overflow-hidden transition-[transform,box-shadow] duration-200 ease-linear"
+              style={{ transformStyle: isDesktop ? "preserve-3d" : "flat" }}
             >
               <span
                 className="absolute top-0 left-[25px] sm:left-[45px] w-[60%] h-full rounded-2xl transition-all duration-500 ease-out group-hover:opacity-0"
@@ -166,7 +166,7 @@ export default function Home() {
                 <span className="absolute bottom-0 right-0 w-0 h-0 rounded-2xl opacity-0 bg-white/10 backdrop-blur-sm transition-all duration-700 ease-out animate-blob-alt group-hover:bottom-[-30px] group-hover:right-[30px] group-hover:w-[60px] group-hover:h-[60px] group-hover:opacity-100" />
               </span>
               <div
-                className="relative z-20 bg-white/25 backdrop-blur-md border border-white/30 rounded-2xl h-full flex flex-row sm:flex-col items-center sm:items-start gap-2 sm:gap-0 p-2.5 sm:p-6 transition-all duration-500 group-hover:bg-white/30 group-hover:shadow-lg"
+                className="relative z-20 bg-white/25 backdrop-blur-md border border-white/30 rounded-2xl h-full flex flex-row sm:flex-col items-center sm:items-start gap-1.5 sm:gap-0 p-2 sm:p-6 transition-all duration-500 group-hover:bg-white/30 group-hover:shadow-lg"
                 style={{ transform: `translateZ(${tz(30)})`, transformStyle: "preserve-3d" }}
               >
                 <card.icon size={15} strokeWidth={1.5} className={`${card.iconClass} shrink-0 sm:mb-2 sm:w-5 sm:h-5`} style={{ transform: `translateZ(${tz(10)})` }} />
@@ -184,7 +184,7 @@ export default function Home() {
       </div>
 
       {/* Action buttons */}
-      <div className="flex gap-2 sm:gap-4">
+      <div className="card-grid flex gap-2 sm:gap-4" style={{ marginTop: "28px" }}>
         {actionBtns.map((btn, i) => (
           <Link
             key={i}
@@ -205,7 +205,7 @@ export default function Home() {
       </div>
 
       {/* Compact daily summary + expandable history */}
-      <div className="home-card glass rounded-2xl p-3 sm:p-4 space-y-2">
+      <div className="home-card glass rounded-2xl p-1.5 sm:p-4 space-y-1">
         <button
           onClick={() => setHistoryExpanded(!historyExpanded)}
           className="w-full flex items-center justify-between text-left"

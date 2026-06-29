@@ -1,3 +1,18 @@
+// 兼容旧浏览器：ctx.roundRect 方法在部分版本不支持，手动实现
+function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
 const quotes = [
   "学而不思则罔，思而不学则殆。",
   "不积跬步，无以至千里。",
@@ -46,13 +61,13 @@ export function generateShareImage(stats: ShareStats): Promise<Blob> {
   // Main glass card
   ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
   ctx.beginPath();
-  ctx.roundRect(30, 35, W - 60, H - 70, 28);
+  roundRect(ctx,30, 35, W - 60, H - 70, 28);
   ctx.fill();
 
   ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.roundRect(30, 35, W - 60, H - 70, 28);
+  roundRect(ctx,30, 35, W - 60, H - 70, 28);
   ctx.stroke();
 
   // Top section
@@ -98,7 +113,7 @@ export function generateShareImage(stats: ShareStats): Promise<Blob> {
     // Column card background
     ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
     ctx.beginPath();
-    ctx.roundRect(x, colY, colW, colH, 18);
+    roundRect(ctx,x, colY, colW, colH, 18);
     ctx.fill();
 
     // Icon
@@ -147,7 +162,24 @@ export function generateShareImage(stats: ShareStats): Promise<Blob> {
   ctx.font = "13px 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif";
   ctx.fillText("danciwang.pages.dev", W / 2, H - 70);
 
-  return new Promise((resolve) => {
-    canvas.toBlob((blob) => resolve(blob!), "image/png");
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob((blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Canvas toBlob returned null"));
+      }, "image/png");
+    } catch {
+      // toBlob 不支持时回退到 dataURL
+      try {
+        const dataUrl = canvas.toDataURL("image/png");
+        const byteString = atob(dataUrl.split(",")[1]);
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+        resolve(new Blob([ab], { type: "image/png" }));
+      } catch (e) {
+        reject(e);
+      }
+    }
   });
 }
